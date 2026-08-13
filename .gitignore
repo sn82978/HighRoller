@@ -1,0 +1,14 @@
+.claude/
+
+__pycache__/
+*.pyc
+.DS_Store
+
+# Intermediate fetch caches — regenerable, and large (~70MB+).
+data/cache/
+
+# CSV mirrors of the parquet datasets. Identical content, ~20x the bytes
+# (~500MB vs ~25MB). Regenerate with:
+#   python data/fetch_btc_updown_15m.py --build-only --format csv
+#   python data/fetch_btc_updown_15m_trades.py --build-only --format csv
+data/polymarket/**/*.csv
