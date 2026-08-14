@@ -111,7 +111,15 @@ class TradingEnv:
 
         return (price_bucket, time_bucket, self.position, pnl_bucket)
 
-    def reset(self, episode_index):
+    @staticmethod
+    def state_space_size():
+        return (N_PRICE_BUCKETS, MAX_TIME_BUCKET+1, 3, N_PNL_BUCKETS)
+
+    @staticmethod
+    def n_actions():
+        return 4
+
+    def reset(self, episode_index=None):
         index = episode_index
         if episode_index is None:
             index = self._rng.integers(0, len(self.episodes))
