@@ -7,9 +7,9 @@ make a list of df's w/ one 15-minute market
 import pandas as pd
 import os
 
-DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/QLearning/data/train"
-TEST_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/QLearning/data/test"
-EVAL_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/QLearning/data/val"
+DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data/train"
+TEST_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data/test"
+EVAL_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data/val"
 
 def prepare_episodes(df: pd.DataFrame):
     episodes = []
