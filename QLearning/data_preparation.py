@@ -7,7 +7,9 @@ make a list of df's w/ one 15-minute market
 import pandas as pd
 import os
 
-DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/data/polymarket/btc_updown_15m_candles_15s"
+DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/QLearning/data/train"
+TEST_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/QLearning/data/test"
+EVAL_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/QLearning/data/val"
 
 def prepare_episodes(df: pd.DataFrame):
     episodes = []
@@ -31,9 +33,44 @@ def prepare_episodes(df: pd.DataFrame):
 
     return episodes
 
-# for file in os.listdir(DATA_DIR):
-#     if not file.endswith('.csv'):
-#         continue
-df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
-episodes = prepare_episodes(df)
-print(f"{len(episodes)} episodes")
+def get_training_data():
+    all_episodes = []
+    for file in os.listdir(DATA_DIR):
+        if not file.endswith('.csv'):
+            continue
+        # df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
+        df = pd.read_csv(f"{DATA_DIR}/{file}")
+        episodes = prepare_episodes(df)
+        all_episodes += episodes
+        # print(f"{len(episodes)} episodes")
+
+    print(f"{len(all_episodes)} training episodes")
+    return episodes
+
+def get_eval_data():
+    all_episodes = []
+    for file in os.listdir(EVAL_DIR):
+        if not file.endswith('.csv'):
+            continue
+        # df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
+        df = pd.read_csv(f"{EVAL_DIR}/{file}")
+        episodes = prepare_episodes(df)
+        all_episodes += episodes
+        # print(f"{len(episodes)} episodes")
+
+    print(f"{len(all_episodes)} eval episodes")
+    return episodes
+
+def get_test_data():
+    all_episodes = []
+    for file in os.listdir(TEST_DIR):
+        if not file.endswith('.csv'):
+            continue
+        # df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
+        df = pd.read_csv(f"{TEST_DIR}/{file}")
+        episodes = prepare_episodes(df)
+        all_episodes += episodes
+        # print(f"{len(episodes)} episodes")
+
+    print(f"{len(all_episodes)} test episodes")
+    return episodes

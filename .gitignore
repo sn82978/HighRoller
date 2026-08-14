@@ -17,3 +17,4 @@ data/polymarket/**/*.csv
 .venv
 *.npy
 btc_updown_15m_candles_15s
+*.csv

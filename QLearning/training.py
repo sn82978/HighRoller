@@ -4,11 +4,9 @@ train and evaluate the q learning agent
 
 import numpy as np
 import pandas as pd
-from data_preparation import prepare_episodes
+from data_preparation import get_training_data, get_eval_data, get_test_data
 from make_environment import TradingEnv
 from q_learning_agent import QLearningAgent
-
-DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/data/polymarket/btc_updown_15m_candles_15s"
 
 def evaluate(env: TradingEnv, agent: QLearningAgent):
     # run a deterministic eval loop where epsilon is 0 across all the episodes
@@ -32,17 +30,18 @@ def evaluate(env: TradingEnv, agent: QLearningAgent):
     print(f"avg pnl per market: {np.mean(total_pnls)}")
     print(f"total pnl: {sum(total_pnls)}")
 
-def main(DATA_FILE, NUM_EPISODES=5000):
+def main(NUM_EPISODES=5000):
     # data prep
-    raw_df = pd.read_csv(DATA_FILE)
-    episodes = prepare_episodes(raw_df)
+    print('getting training data')
+    episodes = get_training_data()
 
     # make env and agent
+    print('making environment and agent')
     env = TradingEnv(episodes=episodes)
     agent = QLearningAgent(state_shape=env.state_space_size(), n_actions=env.n_actions())
 
     # training loop
-
+    print('training begun')
     for ep in range(NUM_EPISODES):
         state = env.reset()
         done = False
@@ -62,13 +61,18 @@ def main(DATA_FILE, NUM_EPISODES=5000):
         if (ep + 1) % 500 == 0 or ep == 0:
             print(f"Episode {ep + 1}/{NUM_EPISODES}; Epsilon: {agent.epsilon}")
 
-
+    print('saving q table')
     agent.save() # save q table
 
-    evaluate(env, agent)
+    print('evaluating agent')
+    eval_episodes = get_eval_data()
+    eval_env = TradingEnv(episodes=eval_episodes)
+    evaluate(eval_env, agent)
 
-# for file in os.listdir(DATA_DIR):
-#     if not file.endswith('.csv'):
-#         continue
-file = f"{DATA_DIR}/btc_updown_15m_candles_15s_2026-02-26.csv"
-main(file, 20)
+    # print('testing agent')
+    # test_episodes = get_test_data()
+    # test_env = TradingEnv(episodes=test_episodes)
+    # evaluate(test_env, agent)
+
+if __name__ == '__main__':
+    main(NUM_EPISODES=5000)
