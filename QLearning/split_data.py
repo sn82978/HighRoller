@@ -1,7 +1,7 @@
 '''
 splits data/polymarket/btc_update_15m_candles_15s into a train folder, val folder, and test folder randomly.
 
-70% test, 10% val, 20% test
+60% test, 20% val, 20% test
 '''
 
 import os
@@ -9,10 +9,10 @@ import shutil
 import random
 
 DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/data/polymarket/btc_updown_15m_candles_15s"
-OUTPUT_BASE_DIR = "./QLearning/data"
+OUTPUT_BASE_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data"
 
-TRAIN_RATIO = 0.70
-VAL_RATIO = 0.10
+TRAIN_RATIO = 0.60
+VAL_RATIO = 0.20
 
 splits = ["train", "val", "test"]
 
@@ -32,7 +32,7 @@ random.shuffle(csv_files)
 
 total_files = len(csv_files)
 train_end = int(total_files * TRAIN_RATIO)
-val_end = train_end + int(total_files * VAL_RATIO)
+val_end = train_end + int(total_files*VAL_RATIO)
 
 train_files = csv_files[:train_end]
 val_files = csv_files[train_end:val_end]

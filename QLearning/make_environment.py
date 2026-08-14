@@ -164,7 +164,7 @@ class TradingEnv:
 
         # forced to settle at episode end if holding position
         if is_last_step and self.position != FLAT:
-            winner = str(row["winner"]).strip().capitalize
+            winner = str(row["winner"]).strip().capitalize()
             if self.position == LONG_UP:
                 held_outcome = "Up"
             else:

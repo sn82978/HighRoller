@@ -36,9 +36,9 @@ class QLearningAgent:
     def decay_epsilon(self):
         self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
 
-    def save(self, filepath: str = "q_table.npy"):
+    def save(self, filepath= "q_table.npy"):
         np.save(filepath, self.q_table)
 
-    def load(self, filepath: str = "q_table.npy"):
+    def load(self, filepath="q_table.npy"):
         self.q_table = np.load(filepath)
     
