@@ -12,3 +12,7 @@ data/cache/
 #   python data/fetch_btc_updown_15m.py --build-only --format csv
 #   python data/fetch_btc_updown_15m_trades.py --build-only --format csv
 data/polymarket/**/*.csv
+
+# shreya
+.venv
+*.npy
