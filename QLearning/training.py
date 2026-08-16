@@ -56,7 +56,7 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
     avg_pnl_per_market = float(np.mean(pnls)) if len(pnls) > 0 else 0.0
 
     # proposal metrics
-    pnl_per_1k_capital = (total_pnl / 1000.0)  # cum PnL per $1,000 capital
+    pnl_per_1k_capital = (total_pnl / 1000.0) # cum PnL per $1,000 capital
     sharpe_ratio = float(avg_pnl_per_market / np.std(pnls)) if np.std(pnls) > 0 else 0.0
 
     # max drawdown calculation
@@ -82,16 +82,16 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
                     "model": model_name,
                     "iteration": iteration,
                     "env_name": env_name,
-                    "win_rate": win_rate,
+                    "win_rate": win_rate, # percentage of trades that resulted in a profit. (a 60% win rate means 6 out of 10 trades were profitable)
                     "num_markets": len(total_pnls),
-                    "avg_pnl_per_market": avg_pnl_per_market,
-                    "total_pnl": total_pnl,
-                    "pnl_per_1k_capital": pnl_per_1k_capital,
-                    "sharpe_ratio": sharpe_ratio,
-                    "max_drawdown": max_drawdown,
-                    "turnover": turnover,
-                    "total_fees_paid": total_fees,
-                    "fee_fraction_gross_pnl": fee_fraction_gross_pnl,
+                    "avg_pnl_per_market": avg_pnl_per_market, # total profit divided by the number of markets. It shows how well the model performs on an average asset
+                    "total_pnl": total_pnl, # absolute amount of money the model made (if positive) or lost (if negative) across all its trades
+                    "pnl_per_1k_capital": pnl_per_1k_capital, # shows exactly how much profit (or loss) was generated for every $1,000 of starting capital. This makes it easier to compare strategies regardless of their total bankroll
+                    "sharpe_ratio": sharpe_ratio, # how much much excess return we are getting for the extra volatility we are enduring (Sharpe ratio > 1 is generally considered good, > 2 is very good, and > 3 is excellent)
+                    "max_drawdown": max_drawdown, # largest single drop in portfolio value from a peak to a trough before a new peak is reached
+                    "turnover": turnover, # how frequently the portfolio is bought and sold. high turnover means the model is making many trades or flipping its entire portfolio rapidly
+                    "total_fees_paid": total_fees, # absolute amount of money spent on transaction fees, commissions, or exchange costs
+                    "fee_fraction_gross_pnl": fee_fraction_gross_pnl, # percentage of the raw profits (gross PnL) that was eaten up by trading fees. If a model makes $100 but pays $40 in fees, the fraction is 40%
                     "avg_holding_period": avg_holding_period,
                 }
             ]
@@ -239,7 +239,7 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
 
 
 if __name__ == "__main__":
-    base_modelname = "0.7T_0.2E_qtable"
+    base_modelname = "0.8T_0.2E_qtable"
     for i in range(30):
         modelname = f"{base_modelname}ITER{i}"
-        main(modelname, iteration=i, NUM_EPISODES=5923, save_to_csv=True)
+        main(modelname, iteration=i, NUM_EPISODES=6789, save_to_csv=True)
