@@ -11,8 +11,8 @@ import random
 DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/data/polymarket/btc_updown_15m_candles_15s"
 OUTPUT_BASE_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data"
 
-TRAIN_RATIO = 0.60
-VAL_RATIO = 0.20
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.2
 
 splits = ["train", "val", "test"]
 
@@ -24,8 +24,10 @@ for split in splits:
 
 # ignore .parquet files
 all_files = os.listdir(DATA_DIR)
-csv_files = [f for f in all_files if f.endswith(".csv") and not f.endswith(".parquet")]
-
+# csv_files = [f for f in all_files if f.endswith(".csv") and not f.endswith(".parquet")]
+csv_files = [f for f in all_files if f.endswith(".parquet") and not f.endswith(".csv")]
+# csv_files = all_files
+# print(len(csv_files))
 # shuffle randomly
 random.seed(42) # i set a seed for reproducible splits
 random.shuffle(csv_files)

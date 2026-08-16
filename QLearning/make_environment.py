@@ -47,23 +47,29 @@ N_PRICE_BUCKETS = 10 # divides the share price (0 to 1) into 10 bins
 N_PNL_BUCKETS = 5 # divides ou unrealized pnl into 5 bins when we hold a position
 MAX_TIME_BUCKET = 59 # how much time is left in the market in 15 * 4 = 60 candles
 
+# taker fee parameters for crypto markets from polymarket documentation
+TAKER_FEE_RATE = 0.07
+
+def calculate_polymarket_fee(price, size= 1.0):
+    # C * feeRate * p * (1 - p)
+    return size * TAKER_FEE_RATE * price * (1.0 - price)
+
 # internal class to keep info going on in episodes
 class StepInfo:
-    def __init__(self, action_name, was_valid, position, realized_pnl):
+    def __init__(self, action_name, was_valid, position, realized_pnl, fee=0.0, gross_pnl=0.0):
         self.action_name = action_name
         self.was_valid = was_valid
         self.position = position
         self.realized_pnl = realized_pnl
+        self.fee = fee
+        self.gross_pnl = gross_pnl
 
-    def __repr__(self):
-        return f"StepInfo(action_name={self.action_name}, was_valid={self.was_valid}, position={self.position}, realized_pnl={self.realized_pnl})"
+    def get(self, key, default=None):
+        return getattr(self, key, default)
 
-    def __eq__(self, other):
-        if not isinstance(other, StepInfo):
-            return False
-
-        return (self.action_name, self.was_valid, self.position, self.realized_pnl) == (other.action_name, other.was_valid, other.position, other.self.realized_pnl)
-
+    def __getitem__(self, item):
+        return getattr(self, item)
+    
 class TradingEnv:
 
     def __init__(self, episodes):
@@ -85,21 +91,23 @@ class TradingEnv:
 
         # cut the price of curr position
         if self.position == LONG_UP:
-            cur_price = row["price_up"]
+            curr_price = row["price_up"]
         elif self.position == LONG_DOWN:
-            cur_price = row["price_down"]
+            curr_price = row["price_down"]
         else:
-            cur_price = row["price_up"]
+            curr_price = row["price_up"]
+
+        # print(self.position, curr_price)
 
         # calculate the price bucket
-        price_bucket = min(int(cur_price * N_PRICE_BUCKETS), N_PRICE_BUCKETS - 1)
+        price_bucket = min(int(curr_price * N_PRICE_BUCKETS), N_PRICE_BUCKETS - 1)
         price_bucket = max(0, price_bucket)
 
         # calculate pnl bucket
         if self.position == FLAT:
             pnl_bucket = N_PNL_BUCKETS//2 # bucket 2 is neutral
         else:
-            unrealized = cur_price - self.entry_price
+            unrealized = curr_price - self.entry_price
             clipped = max(-0.5, min(0.5, unrealized)) # range: [-0.5, +0.5]
             
             # scale [-0.5, 0.5] -> [0.0, 1.0], multiply by 5, convert to int
@@ -119,6 +127,13 @@ class TradingEnv:
     def n_actions():
         return 4
 
+    def get_valid_actions(self):
+        # returns list of allowed actions based on current position
+        if self.position == FLAT:
+            return [HOLD, BUY_UP, BUY_DOWN]
+        else:
+            return [HOLD, SELL]
+
     def reset(self, episode_index=None):
         index = episode_index
         if episode_index is None:
@@ -133,54 +148,59 @@ class TradingEnv:
     def step(self, action):
         row = self._ep.iloc[self._i]
         price_up, price_down = row["price_up"], row["price_down"]
-        is_last_step = self._i == len(self._ep)-1
+        is_last_step = self._i == len(self._ep) - 1
 
         reward = 0.0
+        fee = 0.0
+        gross_pnl = 0.0
         was_valid = True
 
+        # BUY_UP
         if action == BUY_UP:
             if self.position == FLAT:
                 self.position = LONG_UP
+                fee = calculate_polymarket_fee(price_up)
                 self.entry_price = price_up
+                reward = -fee # immediate penalty for paying taker entry fee
             else:
                 was_valid = False
 
+        # BUY_DOWN
         elif action == BUY_DOWN:
             if self.position == FLAT:
                 self.position = LONG_DOWN
+                fee = calculate_polymarket_fee(price_down)
                 self.entry_price = price_down
+                reward = -fee # immediate penalty for paying taker entry fee
             else:
                 was_valid = False
 
+        # SELL
         elif action == SELL:
             if self.position == LONG_UP:
-                reward = price_up - self.entry_price
+                fee = calculate_polymarket_fee(price_up)
+                gross_pnl = price_up - self.entry_price
+                reward = gross_pnl - fee
                 self.position, self.entry_price = FLAT, 0.0
             elif self.position == LONG_DOWN:
-                reward = price_down - self.entry_price
+                fee = calculate_polymarket_fee(price_down)
+                gross_pnl = price_down - self.entry_price
+                reward = gross_pnl - fee
                 self.position, self.entry_price = FLAT, 0.0
             else:
                 was_valid = False
 
-        # forced to settle at episode end if holding position
+        # forced settlement at episode end (no exit taker fee on resolution)
         if is_last_step and self.position != FLAT:
             winner = str(row["winner"]).strip().capitalize()
-            if self.position == LONG_UP:
-                held_outcome = "Up"
-            else:
-                held_outcome = "Down"
+            held_outcome = "Up" if self.position == LONG_UP else "Down"
+            payout = 1.0 if held_outcome == winner else 0.0
 
-            if held_outcome == winner:
-                payout = 1.0
-            else:
-                payout = 0.0
+            gross_pnl = payout - self.entry_price
+            reward += gross_pnl # added settlement payout net of original entry fee
+            self.position, self.entry_price = FLAT, 0.0
 
-            reward = payout - self.entry_price
-
-            self.position = FLAT
-            self.entry_price = 0.0
-
-        info = StepInfo(ACTION_NAMES[action], was_valid, self.position, reward)
+        info = StepInfo(ACTION_NAMES[action], was_valid, self.position, reward, fee=fee, gross_pnl=max(0.0, gross_pnl))
         done = is_last_step
 
         if not done:
@@ -188,3 +208,4 @@ class TradingEnv:
 
         next_state = self._get_state()
         return next_state, reward, done, info
+        
