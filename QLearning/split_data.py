@@ -11,7 +11,7 @@ import random
 DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/data/polymarket/btc_updown_15m_candles_15s"
 OUTPUT_BASE_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data"
 
-TRAIN_RATIO = 0.7
+TRAIN_RATIO = 0.8
 VAL_RATIO = 0.2
 
 splits = ["train", "val", "test"]
