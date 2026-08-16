@@ -17,4 +17,6 @@ data/polymarket/**/*.csv
 .venv
 *.npy
 btc_updown_15m_candles_15s
+btc_updown_15m_minute
+btc_updown_15m_ticks
 QLearning/data
