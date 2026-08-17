@@ -41,7 +41,9 @@ for metrics_csv in os.listdir(METRICS_DIR):
     if not metrics_csv.endswith('.csv'):
         continue
 
-    # Note: Using path.join prevents issues with missing slashes
+    if '0.8T_0.2E' not in metrics_csv:
+        continue
+    
     testset = metrics_csv.split('_')[-1].replace('.csv', '')
     df = pd.read_csv(os.path.join(METRICS_DIR, metrics_csv))
 

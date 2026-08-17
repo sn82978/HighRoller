@@ -1,7 +1,3 @@
-'''
-tabular q-learning agent
-'''
-
 import numpy as np
 
 class QLearningAgent:
@@ -14,23 +10,37 @@ class QLearningAgent:
         self.min_epsilon = min_epsilon # lowest allowed val for epsilon
         self.n_actions = n_actions # total actions we can take
 
-    def select_action(self, state, greedy=False):
-        # select an action using epsilon greedy
+    def select_action(self, state, valid_actions=None, greedy=False):
+        # mask invalid actions if provided
+        if valid_actions is None:
+            valid_actions = list(range(self.n_actions))
 
         if not greedy and np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions) # random exploration choice
+            return int(np.random.choice(valid_actions)) # pick only from valid actions
 
-        return int(np.argmax(self.q_table[state])) # choose the largest q-val  
+        # choose largest q-val among valid actions
+        q_vals = self.q_table[state]
+        masked_q_vals = np.full_like(q_vals, -np.inf)
+        masked_q_vals[valid_actions] = q_vals[valid_actions]
+        
+        # breaking ties randomly prevents the agent from getting stuck always choosing action 0 (HOLD) when all Q-vals are 0.0
+        max_val = np.max(masked_q_vals)
+        best_actions = [a for a in valid_actions if masked_q_vals[a] == max_val]
+        return int(np.random.choice(best_actions))
 
-    def update(self, state, action, reward, next_state, done):
-        # std q learning td update rule
-        best_next_action = np.argmax(self.q_table[next_state])
+    def update(self, state, action, reward, next_state, done, next_valid_actions=None):
+        # mask the next state's actions so we don't bootstrap from impossible actions
+        if next_valid_actions is None:
+            next_valid_actions = list(range(self.n_actions))
+            
         target = reward
         if not done:
-            target += self.gamma * self.q_table[next_state][best_next_action]
+            # Only consider valid actions for the next state's max Q-value
+            next_q_vals = self.q_table[next_state]
+            max_next_q = np.max(next_q_vals[next_valid_actions])
+            target += self.gamma * max_next_q
 
         td_error = target - self.q_table[state][action]
-
         self.q_table[state][action] += self.alpha * td_error
 
     def decay_epsilon(self):
@@ -41,4 +51,3 @@ class QLearningAgent:
 
     def load(self, filepath="q_table.npy"):
         self.q_table = np.load(filepath)
-    
