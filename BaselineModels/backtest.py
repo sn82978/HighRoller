@@ -212,6 +212,47 @@ def no_trade_policy(step: Step) -> int:
     return HOLD
 
 
+def buy_and_hold_policy(*, tie: str = "down", entry_candle: int = 0) -> Policy:
+    """Back whichever side the market favours at the open, then hold to the end.
+
+    The proposal's buy-and-hold: decide from the opening price alone, never
+    look at anything else, never sell. Pays exactly one taker fee plus entry
+    slippage, then rides to free settlement.
+
+    Up if p_mkt > 0.5, Down if p_mkt < 0.5. At exactly 0.5 there is no favoured
+    side, and `tie` decides: "down" (the default, matching the spec's "Down
+    otherwise"), "up", or "skip" to sit the market out. This is not a rare
+    branch -- 109 of 1,330 validation markets (8.2%) open at exactly 0.500,
+    because the book quotes in whole cents -- so whichever way it is set, it is
+    choosing the side for one market in twelve, at the price where the fee is
+    at its maximum.
+
+    Entry is the first tradable candle at or after `entry_candle`. For the 13
+    validation markets whose tape starts after candle 0 that is their first
+    available row rather than the true open; they are still traded so the
+    market sample stays identical to the other policies.
+    """
+    if tie not in ("down", "up", "skip"):
+        raise ValueError(f"tie must be 'down', 'up' or 'skip', got {tie!r}")
+
+    def policy(step: Step) -> int:
+        if step.side is not Side.FLAT or step.n_entries > 0:
+            return HOLD
+        if step.candle_index < entry_candle:
+            return HOLD
+        if not np.isfinite(step.p_mkt):
+            return HOLD
+        if step.p_mkt > 0.5:
+            return BUY_UP
+        if step.p_mkt < 0.5:
+            return BUY_DOWN
+        if tie == "skip":
+            return HOLD
+        return BUY_UP if tie == "up" else BUY_DOWN
+
+    return policy
+
+
 def threshold_policy(
     theta: float,
     *,

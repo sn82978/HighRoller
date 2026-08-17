@@ -14,6 +14,7 @@ from BaselineModels.backtest import (
     SETTLEMENT_CANDLE,
     Step,
     backtest,
+    buy_and_hold_policy,
     no_trade_policy,
     run_market,
     threshold_policy,
@@ -253,6 +254,82 @@ def test_min_candles_remaining_blocks_late_entries(feats):
 def test_negative_threshold_is_rejected():
     with pytest.raises(ValueError):
         threshold_policy(-0.01)
+
+
+# -- buy and hold --------------------------------------------------------
+def test_buy_and_hold_takes_exactly_one_position_per_market(feats):
+    results = backtest(feats, buy_and_hold_policy(), FRICTIONLESS)
+    assert len(results) == feats.event_slug.nunique()
+    assert all(r.n_trades == 1 for r in results)
+
+
+def test_buy_and_hold_never_sells_early(feats):
+    for r in backtest(feats, buy_and_hold_policy(), FRICTIONLESS):
+        assert not r.early_exit
+        assert r.exit_candle == SETTLEMENT_CANDLE
+
+
+def test_buy_and_hold_pays_exactly_one_fee(feats):
+    """One entry fee, nothing at settlement -- notional equals the stake."""
+    for r in backtest(feats, buy_and_hold_policy(), FRICTIONLESS):
+        assert r.notional_traded == pytest.approx(r.stake_deployed)
+        assert r.fees > 0
+
+
+def test_buy_and_hold_enters_at_the_first_live_candle(feats):
+    src = feats.groupby("event_slug").candle_index.min()
+    for r in backtest(feats, buy_and_hold_policy(), FRICTIONLESS):
+        assert r.entry_candle == int(src[r.event_slug]) + 1
+
+
+def test_buy_and_hold_backs_the_favoured_side(candles):
+    """Above 0.5 -> Up, below -> Down, judged on the opening price only."""
+    up_first = _market_opening_at(candles, 0.80)
+    down_first = _market_opening_at(candles, 0.20)
+
+    r_up = run_market(build_features(up_first), buy_and_hold_policy(), FRICTIONLESS)
+    r_dn = run_market(build_features(down_first), buy_and_hold_policy(), FRICTIONLESS)
+    assert r_up.n_trades == 1 and r_dn.n_trades == 1
+    # Winner is "Up" in both fixtures, so backing Up profits and Down does not.
+    assert r_up.pnl > 0
+    assert r_dn.pnl < 0
+
+
+def test_buy_and_hold_tie_at_exactly_half_is_configurable(candles):
+    """8.2% of real markets open at exactly 0.500, so this branch is load-bearing."""
+    flat = _market_opening_at(candles, 0.50)
+    feats = build_features(flat)
+
+    down = run_market(feats, buy_and_hold_policy(tie="down"), FRICTIONLESS)
+    up = run_market(feats, buy_and_hold_policy(tie="up"), FRICTIONLESS)
+    skip = run_market(feats, buy_and_hold_policy(tie="skip"), FRICTIONLESS)
+
+    assert down.n_trades == 1 and up.n_trades == 1
+    assert skip.n_trades == 0 and skip.pnl == 0.0
+    # Opposite sides of the same market: one wins, the other loses.
+    assert (down.pnl > 0) != (up.pnl > 0)
+
+
+def test_buy_and_hold_rejects_an_unknown_tie_rule():
+    with pytest.raises(ValueError, match="tie must be"):
+        buy_and_hold_policy(tie="coinflip")
+
+
+def test_buy_and_hold_ignores_the_model(feats):
+    """It must not consult p_hat, so predictions cannot change its behaviour."""
+    a = backtest(feats, buy_and_hold_policy(), FRICTIONLESS)
+    b = backtest(feats, buy_and_hold_policy(), FRICTIONLESS, p_hat=np.ones(len(feats)))
+    assert [r.pnl for r in a] == pytest.approx([r.pnl for r in b])
+
+
+def _market_opening_at(candles, price):
+    """One market whose live window opens at `price`, winner Up."""
+    one = candles[candles.event_slug == candles.event_slug.iloc[0]].copy()
+    one["winner"] = "Up"
+    live = one.candle_index >= 0
+    for col in ("open", "high", "low", "close", "vwap"):
+        one.loc[live, col] = price
+    return one
 
 
 # -- wiring guards -------------------------------------------------------
