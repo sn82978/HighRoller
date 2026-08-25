@@ -1,4 +1,9 @@
 '''
+SUPERSEDED, don't run this anymore.
+
+random split, not the same one the rest of the models use now (see data_preparation.py,
+which pulls the split from BaselineModels instead). keeping this around for history.
+
 splits data/polymarket/btc_update_15m_candles_15s into a train folder, val folder, and test folder randomly.
 
 60% test, 20% val, 20% test

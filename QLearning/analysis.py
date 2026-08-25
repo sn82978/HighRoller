@@ -2,7 +2,8 @@ import matplotlib.pyplot as plt
 import os
 import pandas as pd
 
-METRICS_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/metrics"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+METRICS_DIR = os.path.join(ROOT, "QLearning/metrics")
 FIGS_DIR = f"{METRICS_DIR}/figs"
 
 def make_histograms(df, testset):
