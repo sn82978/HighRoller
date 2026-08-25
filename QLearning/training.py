@@ -1,4 +1,10 @@
 import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -7,110 +13,89 @@ from make_environment import TradingEnv
 from q_learning_agent import QLearningAgent
 from make_environment import StepInfo
 
-SAVE_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/figs"
-METRICS_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/metrics"
-MODELS_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/models"
+from sim.evaluation import score
+from sim.execution import ACTION_NAMES, ExecutionConfig, HOLD, BUY_UP, BUY_DOWN, CLOSE
 
-# actions we can take
-HOLD = 0
-BUY_UP = 1
-BUY_DOWN = 2
-SELL = 3
+# repo-relative now instead of hardcoded to shreya's machine
+SAVE_DIR = os.path.join(ROOT, "QLearning/figs")
+METRICS_DIR = os.path.join(ROOT, "QLearning/metrics")
+MODELS_DIR = os.path.join(ROOT, "QLearning/models")
+OUT_DIR = os.path.join(ROOT, "QLearning/output")
 
-ACTION_NAMES = {HOLD: "HOLD", BUY_UP: "BUY_UP", BUY_DOWN: "BUY_DOWN", SELL: "SELL"}
 
-def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name: str,model_name: str,iteration: int):
-    # run a deterministic eval loop where epsilon is 0 across all the episodes
-    total_pnls = []
-    holding_periods = []
-    total_fees = 0.0
-    gross_pnl = 0.0
-    all_ep_actions = [] # track actions across eval episodes
+def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name: str, model_name: str, iteration: int):
+    # greedy pass (epsilon=0) over every episode, builds rows in the same schema
+    # the other models use so it can go through sim.evaluation.score() too
+    market_rows = []
+    all_ep_actions = []  # track actions across eval episodes
 
     for i in range(len(env.episodes)):
         state = env.reset(episode_index=i)
         done = False
-        ep_pnl = 0.0
-        steps = 0
-        ep_actions = [] # track actions per episode
+        ep_actions = []
 
         while not done:
             valid_actions = env.get_valid_actions()
             action = agent.select_action(state, valid_actions=valid_actions, greedy=True)
             state, reward, done, info = env.step(action)
             ep_actions.append(action)
-            ep_pnl += reward
-            steps += 1
 
-            if isinstance(info, StepInfo):
-                total_fees += info.fee
-                gross_pnl += info.gross_pnl
-
-        total_pnls.append(ep_pnl)
-        holding_periods.append(steps)
+        ep = env._ep
+        last = ep.iloc[-1]
+        market_rows.append(
+            dict(
+                strategy=model_name,
+                event_slug=str(last.event_slug),
+                start_ts=int(ep.iloc[0].start_ts),
+                split=env_name,
+                stake=env.config.stake_dollars,
+                pnl=env.portfolio.cash,
+                return_pct=env.portfolio.cash / env.config.stake_dollars * 100.0,
+                traded=bool(env.portfolio.trades),
+                n_legs=len(env.portfolio.trades),
+                winner=str(last.winner),
+            )
+        )
         all_ep_actions.append(ep_actions)
 
-    pnls = np.array(total_pnls)
-    total_pnl = float(sum(pnls))
-    win_rate = float((pnls > 0).mean() * 100)
-    avg_pnl_per_market = float(np.mean(pnls)) if len(pnls) > 0 else 0.0
+    mk = pd.DataFrame(market_rows)
 
-    # proposal metrics
-    pnl_per_1k_capital = (total_pnl / 1000.0) # cum PnL per $1,000 capital
-    sharpe_ratio = float(avg_pnl_per_market / np.std(pnls)) if np.std(pnls) > 0 else 0.0
-
-    # max drawdown calculation
-    cum_pnls = np.cumsum(pnls)
-    running_max = np.maximum.accumulate(cum_pnls)
-    drawdowns = running_max - cum_pnls
-    max_drawdown = float(np.max(drawdowns)) if len(drawdowns) > 0 else 0.0
-
-    avg_holding_period = float(np.mean(holding_periods))
-    turnover = float(np.sum(holding_periods))
-    fee_fraction_gross_pnl = float(total_fees / gross_pnl if gross_pnl > 0 else 0.0)
-
+    win_rate = float((mk.pnl > 0).mean() * 100) if len(mk) else 0.0
     print(f"win rate: {win_rate}")
-    print(f"num markets: {len(total_pnls)}")
-    print(f"avg pnl per market: {avg_pnl_per_market}")
-    print(f"total pnl: {total_pnl}")
+    print(f"num markets: {len(mk)}")
+    print(f"avg pnl per market: {mk.pnl.mean() if len(mk) else 0.0}")
+    print(f"total pnl: {mk.pnl.sum() if len(mk) else 0.0}")
 
-    if save_to_csv:
+    if save_to_csv and len(mk):
+        os.makedirs(METRICS_DIR, exist_ok=True)
+        os.makedirs(OUT_DIR, exist_ok=True)
+
+        s = score(mk)
+        s["model"] = model_name
+        s["iteration"] = iteration
+        metrics_df = pd.DataFrame([s])
         csv_path = f"{METRICS_DIR}/{model_name.split('ITER')[0]}_{env_name}.csv"
-        metrics_df = pd.DataFrame(
-            [
-                {
-                    "model": model_name,
-                    "iteration": iteration,
-                    "env_name": env_name,
-                    "win_rate": win_rate, # percentage of trades that resulted in a profit. (a 60% win rate means 6 out of 10 trades were profitable)
-                    "num_markets": len(total_pnls),
-                    "avg_pnl_per_market": avg_pnl_per_market, # total profit divided by the number of markets. It shows how well the model performs on an average asset
-                    "total_pnl": total_pnl, # absolute amount of money the model made (if positive) or lost (if negative) across all its trades
-                    "pnl_per_1k_capital": pnl_per_1k_capital, # shows exactly how much profit (or loss) was generated for every $1,000 of starting capital. This makes it easier to compare strategies regardless of their total bankroll
-                    "sharpe_ratio": sharpe_ratio, # how much much excess return we are getting for the extra volatility we are enduring (Sharpe ratio > 1 is generally considered good, > 2 is very good, and > 3 is excellent)
-                    "max_drawdown": max_drawdown, # largest single drop in portfolio value from a peak to a trough before a new peak is reached
-                    "turnover": turnover, # how frequently the portfolio is bought and sold. high turnover means the model is making many trades or flipping its entire portfolio rapidly
-                    "total_fees_paid": total_fees, # absolute amount of money spent on transaction fees, commissions, or exchange costs
-                    "fee_fraction_gross_pnl": fee_fraction_gross_pnl, # percentage of the raw profits (gross PnL) that was eaten up by trading fees. If a model makes $100 but pays $40 in fees, the fraction is 40%
-                    "avg_holding_period": avg_holding_period,
-                }
-            ]
-        )
-
         file_exists = os.path.exists(csv_path)
         metrics_df.to_csv(csv_path, mode="a", header=not file_exists, index=False)
+
+        # same schema as the other models so compare_models.py can just concat these
+        markets_path = os.path.join(OUT_DIR, "markets.csv")
+        file_exists = os.path.exists(markets_path)
+        mk.to_csv(markets_path, mode="a", header=not file_exists, index=False)
 
     return all_ep_actions
 
 
-def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
+def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False, config: ExecutionConfig | None = None):
+    config = config or ExecutionConfig()
+
     # data prep
     print("getting training data")
     episodes = get_training_data()
 
     # make env and agent
     print("making environment and agent")
-    env = TradingEnv(episodes=episodes)
+    env = TradingEnv(episodes=episodes, config=config)
     agent = QLearningAgent(state_shape=env.state_space_size(), n_actions=env.n_actions())
 
     # Lists to track metrics over training
@@ -130,12 +115,12 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
         while not done:
             valid_actions = env.get_valid_actions()
             action = agent.select_action(state, valid_actions=valid_actions)
-            
+
             next_state, reward, done, _ = env.step(action)
-            
+
             # get the valid actions for the state we just transitioned INTO
             next_valid_actions = env.get_valid_actions()
-            
+
             agent.update(state, action, reward, next_state, done, next_valid_actions=next_valid_actions)
 
             state = next_state
@@ -148,7 +133,7 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
         # cnt frequency of each action (0, 1, 2, 3)
         n_actions = env.n_actions()
         ep_counts = [ep_actions.count(a) for a in range(n_actions)]
-        action_counts_history.append(ep_counts) 
+        action_counts_history.append(ep_counts)
         train_action_sequences.append(ep_actions)
 
         agent.decay_epsilon()
@@ -163,7 +148,7 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
     # rwards over eps and lr curve
     plt.figure(figsize=(10, 5))
     plt.plot(episodes_axis, rewards_history, alpha=0.3, color="blue", label="Episode Reward")
-    
+
     # smooth with a 100-episode moving average
     window = 100
     if len(rewards_history) >= window:
@@ -172,7 +157,7 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
 
     plt.title(f"Training Rewards: {model_name}")
     plt.xlabel("Episode")
-    plt.ylabel("Reward")
+    plt.ylabel("Reward ($)")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(SAVE_DIR, f"{model_name}_rewards.png"), dpi=300)
@@ -203,15 +188,16 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
     plt.close()
 
     print("saving q table")
-    agent.save(f'{MODELS_DIR}/{model_name}')  # save q table
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    agent.save(f'{MODELS_DIR}/{model_name}.npy')  # save q table
 
     print("evaluating agent on training data")
-    train_eval_actions = evaluate(env, agent, save_to_csv, "training", model_name, iteration)
+    train_eval_actions = evaluate(env, agent, save_to_csv, "train", model_name, iteration)
 
     print("evaluating agent")
     eval_episodes = get_eval_data()
-    eval_env = TradingEnv(episodes=eval_episodes)
-    eval_actions = evaluate(eval_env, agent, save_to_csv, "eval", model_name, iteration)
+    eval_env = TradingEnv(episodes=eval_episodes, config=config)
+    eval_actions = evaluate(eval_env, agent, save_to_csv, "val", model_name, iteration)
 
     # plot seq of actions in evaluation as a heatmap
     max_len = max(len(seq) for seq in eval_actions)
@@ -221,10 +207,10 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
 
     plt.figure(figsize=(10, 6))
     plt.imshow(seq_matrix, aspect="auto", cmap="tab10", vmin=-0.5, vmax=env.n_actions() - 0.5)
-    
+
     cbar = plt.colorbar(ticks=range(env.n_actions()))
     cbar.ax.set_yticklabels([ACTION_NAMES.get(a, f"Action {a}") for a in range(env.n_actions())])
-    
+
     plt.title(f"Evaluation Action Sequences: {model_name}")
     plt.xlabel("Step")
     plt.ylabel("Episode")
@@ -234,7 +220,7 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False):
 
     # print('testing agent')
     # test_episodes = get_test_data()
-    # test_env = TradingEnv(episodes=test_episodes)
+    # test_env = TradingEnv(episodes=test_episodes, config=config)
     # evaluate(test_env, agent, save_to_csv, 'test', model_name, iteration)
 
 

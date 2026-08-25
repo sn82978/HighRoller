@@ -20,3 +20,10 @@ btc_updown_15m_candles_15s
 btc_updown_15m_minute
 btc_updown_15m_ticks
 QLearning/data
+
+# backtest outputs, regenerate from strategies/README.md
+strategies/output/
+BaselineModels/output/
+QLearning/output/
+comparison.csv
+comparison_figs/

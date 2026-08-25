@@ -1,79 +1,57 @@
-'''
-take the df of all market rows, clean the timestamps, and filter out neg pre-market candles
+"""
+Turns one train/val/test split into a list of per-market episode DataFrames for TradingEnv.
 
-make a list of df's w/ one 15-minute market
-'''
+Used to build this from a random split done locally in split_data.py, but that didn't
+share any markets with BaselineModels' split, so results weren't comparable across
+models. Now just pulls from sim.evaluation.load_split_candles like everything else does.
+"""
+
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 import pandas as pd
-import os
-import numpy as np
 
-DATA_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data/train"
-TEST_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data/test"
-EVAL_DIR = "/Users/shreyanakum/Documents/HighRoller/QLearning/data/val"
+from sim.evaluation import load_split_candles
 
-def prepare_episodes(df: pd.DataFrame):
+
+def prepare_episodes(df: pd.DataFrame) -> list[pd.DataFrame]:
+    """Split a multi-market candle frame into one DataFrame per market."""
     episodes = []
+    df = df.sort_values(["event_slug", "candle_index"]).copy()
 
-    df = df.sort_values(["event_slug", "t"]).copy()
-
-    for i, ep_df in df.groupby("event_slug"):
-        ep_df = ep_df[ep_df["candle_index"] >= 0].copy() # before the market is when the candle_index is less than 0
+    for slug, ep_df in df.groupby("event_slug", sort=False):
         ep_df = ep_df.dropna(subset=["close"]).copy()
-
-        # print(ep_df.head())
-
         if ep_df.empty:
-            print("empty")
             continue
 
-        ep_df["price_up"] = ep_df["close"] # ir we buy_up, entry price is price_up 
-        ep_df["price_down"] = 1.0 - ep_df["price_up"] # if we buy_down, entry price is price_down
-
-        ep_df = ep_df.reset_index(drop=True) # iloc indexing in env matches exactly
+        ep_df["price_up"] = ep_df["close"]
+        ep_df["price_down"] = 1.0 - ep_df["price_up"]
+        ep_df = ep_df.reset_index(drop=True)
         episodes.append(ep_df)
 
     return episodes
 
-def get_training_data():
-    all_episodes = []
-    for file in os.listdir(DATA_DIR):
-        # if not file.endswith('.csv'):
-        #     continue
-        # df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
-        # df = pd.read_csv(f"{DATA_DIR}/{file}")
-        df = pd.read_parquet(f"{DATA_DIR}/{file}")
-        episodes = prepare_episodes(df)
-        all_episodes += episodes
-        # print(f"{len(episodes)} episodes")
 
-    print(f"{len(all_episodes)} training episodes")
-    return all_episodes
+def get_training_data() -> list[pd.DataFrame]:
+    df = load_split_candles("train")
+    episodes = prepare_episodes(df)
+    print(f"{len(episodes)} training episodes")
+    return episodes
 
-def get_eval_data():
-    all_episodes = []
-    for file in os.listdir(EVAL_DIR):
-        # if not file.endswith('.csv'):
-        #     continue
-        # df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
-        df = pd.read_parquet(f"{EVAL_DIR}/{file}")
-        episodes = prepare_episodes(df)
-        all_episodes += episodes
-        # print(f"{len(episodes)} episodes")
 
-    print(f"{len(all_episodes)} eval episodes")
-    return all_episodes
+def get_eval_data() -> list[pd.DataFrame]:
+    df = load_split_candles("val")
+    episodes = prepare_episodes(df)
+    print(f"{len(episodes)} eval episodes")
+    return episodes
 
-def get_test_data():
-    all_episodes = []
-    for file in os.listdir(TEST_DIR):
-        # if not file.endswith('.csv'):
-        #     continue
-        # df = pd.read_csv(f"{DATA_DIR}/btc_updown_15m_candles_15s_2025-11-28.csv")
-        df = pd.read_parquet(f"{TEST_DIR}/{file}")
-        episodes = prepare_episodes(df)
-        all_episodes += episodes
-        # print(f"{len(episodes)} episodes")
 
-    print(f"{len(all_episodes)} test episodes")
-    return all_episodes
+def get_test_data() -> list[pd.DataFrame]:
+    df = load_split_candles("test", allow_test=True)
+    episodes = prepare_episodes(df)
+    print(f"{len(episodes)} test episodes")
+    return episodes
