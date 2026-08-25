@@ -112,7 +112,8 @@ def test_settlement_charges_no_fee():
     entry_fee = p.fees_paid
     p.settle("Up")
     assert p.fees_paid == pytest.approx(entry_fee), "settle() must not charge a fee"
-    assert p.trades[-1].fee == 0.0
+    # Settlement adds no fill at all, so the entry is still the last trade.
+    assert [t.action for t in p.trades] == [BUY_UP]
 
 
 def test_closing_early_costs_strictly_more_than_holding():
@@ -194,6 +195,64 @@ def test_flipping_sides_closes_the_old_leg_first():
     assert p.shares_up == 0
     assert p.shares_down > 0
     assert len(p.trades) == 3  # buy, close, buy
+
+
+def test_fill_count_does_not_depend_on_the_outcome():
+    """Settlement is a redemption, not a fill, so it never enters `trades`.
+
+    Recording it only when the payout was positive made `len(trades)` -- the
+    `n_legs` column in every markets.csv -- one higher on markets that happened
+    to resolve in our favour. Two identical policies would then look like they
+    traded different amounts purely because one got lucky.
+    """
+    counts = {}
+    for winner in ("Up", "Down"):
+        p = Portfolio(config=FRICTIONLESS)
+        p.buy(Side.UP, 0.50, 0.50, 0.50, candle_index=0)
+        p.settle(winner)
+        counts[winner] = len(p.trades)
+    assert counts["Up"] == counts["Down"] == 1
+    # The payout still lands in cash; only the bookkeeping entry is gone.
+    won = Portfolio(config=FRICTIONLESS)
+    won.buy(Side.UP, 0.50, 0.50, 0.50, candle_index=0)
+    shares = won.shares
+    cash_before = won.cash
+    assert won.settle("Up") == pytest.approx(shares)
+    assert won.cash == pytest.approx(cash_before + shares)
+
+
+def test_unfillable_flip_leaves_the_position_untouched():
+    """A flip is all-or-nothing: never half-executed into a both-legs box.
+
+    `side` reports Up whenever shares_up > 0, so a portfolio holding both legs
+    would look like a plain Up position to every policy and metric downstream.
+    This currently holds for free -- the close and the buy of a flip share a
+    direction, so they compute the same fill price and refuse together -- but
+    it holds by coincidence, and these two tests pin it down so a later change
+    to one leg's guards cannot quietly break it.
+    """
+    p = Portfolio(config=FRICTIONLESS)
+    p.apply(BUY_UP, 0.50, 0.50, 0.50, candle_index=0)
+    shares_before, cash_before = p.shares_up, p.cash
+
+    # 0.999 is outside the tradable band, so the close leg cannot fill.
+    assert p.apply(BUY_DOWN, 0.999, 0.999, 0.999, candle_index=1) is False
+    assert p.shares_down == 0
+    assert p.shares_up == shares_before
+    assert p.cash == cash_before
+    assert len(p.trades) == 1  # the original buy, nothing else
+
+
+def test_unfillable_flip_leaves_the_position_untouched_on_nan():
+    """Same invariant, reached the other way: a NaN candle has no fill price."""
+    p = Portfolio(config=FRICTIONLESS)
+    p.apply(BUY_DOWN, 0.50, 0.50, 0.50, candle_index=0)
+    shares_before = p.shares_down
+
+    assert p.apply(BUY_UP, math.nan, math.nan, math.nan, candle_index=1) is False
+    assert p.shares_up == 0
+    assert p.shares_down == shares_before
+    assert len(p.trades) == 1
 
 
 def test_close_when_flat_is_a_noop():

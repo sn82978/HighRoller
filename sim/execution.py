@@ -15,6 +15,14 @@ candle's OHLC on each row (``next_open`` / ``next_high`` / ``next_low``) so a
 caller physically cannot fill at a price it used as an input. Nothing in this
 module ever sees a price beyond the candle it was handed.
 
+One assumption to state rather than bury: slippage is sized from the *fill*
+candle's own high-low range, which is only fully known once that candle closes.
+A live trader would size it from the spread quoted at the moment of the fill
+instead. This is information from the fill candle, but it is spent exclusively
+against the trader -- ``fill_price`` always displaces the price adversely -- so
+it can make a strategy look worse than it is and never better. It is a cost
+assumption, not a source of edge.
+
 Fees
 ----
 Polymarket charges the taker ``fee = C * r * p * (1 - p)`` where ``C`` is share
@@ -254,6 +262,13 @@ class Portfolio:
         """Redeem at resolution. **No fee** -- this is the free exit.
 
         Returns the cash collected.
+
+        Settlement is deliberately *not* recorded in :attr:`trades`. It is a
+        redemption, not a fill: it pays no fee, crosses no spread, and counting
+        it would inflate turnover. It used to be appended only when the payout
+        was positive, which made ``len(trades)`` one higher on markets that
+        happened to win -- a fill count that depended on the outcome. The cash
+        collected is this method's return value and is visible in :attr:`cash`.
         """
         if self.settled:
             raise RuntimeError("portfolio already settled")
@@ -261,18 +276,6 @@ class Portfolio:
             raise ValueError(f"winner must be 'Up' or 'Down', got {winner!r}")
 
         payout = self.shares_up if winner == "Up" else self.shares_down
-        if payout > 0:
-            self.trades.append(
-                Trade(
-                    candle_index=candle_index,
-                    action=CLOSE,
-                    side=self.side,
-                    shares=payout,
-                    price=1.0,
-                    cash_delta=payout,
-                    fee=0.0,
-                )
-            )
         self.cash += payout
         self.shares_up = 0.0
         self.shares_down = 0.0
@@ -292,6 +295,15 @@ class Portfolio:
 
         Buying the leg opposite an open position closes it first rather than
         holding both legs, which would be a guaranteed-$1 box paying two fees.
+        If that close is refused the flip is abandoned whole.
+
+        Today that guard never fires: closing Up and buying Down both *reduce*
+        Up-equivalent exposure, so the two legs of a flip compute the same fill
+        price and always agree on tradability. The check is here so the
+        all-or-nothing invariant survives anyone tightening :meth:`buy`'s guards
+        independently of :meth:`close`'s -- at which point the coincidence
+        breaks and a half-executed flip would leave both legs open, which
+        :attr:`side` cannot represent and no downstream metric would notice.
         """
         if action == HOLD:
             return False
@@ -300,6 +312,7 @@ class Portfolio:
         if action in (BUY_UP, BUY_DOWN):
             want = Side.UP if action == BUY_UP else Side.DOWN
             if self.side is not Side.FLAT and self.side is not want:
-                self.close(mid, high, low, candle_index)
+                if not self.close(mid, high, low, candle_index):
+                    return False
             return self.buy(want, mid, high, low, candle_index, stake)
         raise ValueError(f"unknown action {action!r}")
