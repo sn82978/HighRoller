@@ -2,7 +2,8 @@
 Side-by-side comparison across every model in the repo.
 
 Reads each model's markets.csv, restricts everyone to the same split's markets,
-scores with sim.evaluation.score(), writes comparison.csv.
+scores with sim.evaluation.score(), writes comparison.csv and (unless
+--no-plots) a set of PNGs under comparison_figs/.
 
     python strategies/generate_trades.py --split val
     python BaselineModels/xgb_baseline.py --split val
@@ -21,9 +22,16 @@ ROOT = os.path.dirname(ROOT)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from sim.evaluation import market_slugs, score
+
+FIGS_DIR = os.path.join(ROOT, "comparison_figs")
 
 #: Every model's markets.csv, keyed by where it lives.
 SOURCES = {
@@ -33,11 +41,77 @@ SOURCES = {
 }
 
 
+def plot_headline_bars(summary: pd.DataFrame, split: str, figs_dir: str) -> str:
+    """One PNG, one bar-chart panel per headline metric, all strategies side by side."""
+    metrics = [
+        ("total_pnl", "Total P&L ($)"),
+        ("avg_return_%", "Avg return / market (%)"),
+        ("win_rate_%", "Win rate (%)"),
+        ("profit_factor", "Profit factor"),
+        ("sharpe_annualized", "Sharpe (annualized)"),
+        ("max_drawdown_$", "Max drawdown ($)"),
+    ]
+    strategies = list(summary.index)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(strategies)))
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for ax, (col, title) in zip(axes.flat, metrics):
+        values = summary[col].to_numpy(dtype=float)
+        bars = ax.bar(strategies, values, color=colors)
+        if col == "avg_return_%":
+            lo = summary["avg_return_%"] - summary["return_ci95_low_%"]
+            hi = summary["return_ci95_high_%"] - summary["avg_return_%"]
+            ax.errorbar(
+                strategies, values, yerr=[lo.to_numpy(), hi.to_numpy()],
+                fmt="none", ecolor="black", capsize=4,
+            )
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_title(title, fontsize=11)
+        ax.tick_params(axis="x", rotation=30, labelsize=8)
+        for bar, v in zip(bars, values):
+            ax.annotate(
+                f"{v:,.1f}", (bar.get_x() + bar.get_width() / 2, v),
+                textcoords="offset points", xytext=(0, 3 if v >= 0 else -12),
+                ha="center", fontsize=7,
+            )
+
+    fig.suptitle(f"Cross-model comparison — split: {split}", fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    os.makedirs(figs_dir, exist_ok=True)
+    path = os.path.join(figs_dir, f"headline_bars_{split}.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+def plot_equity_curves(all_mk: pd.DataFrame, split: str, figs_dir: str) -> str:
+    """Cumulative P&L over time, one line per strategy, all on the same $100 stake."""
+    fig, ax = plt.subplots(figsize=(11, 6))
+    for strat in all_mk.strategy.unique():
+        sub = all_mk[all_mk.strategy == strat].sort_values("start_ts")
+        cum_pnl = np.cumsum(sub.pnl.to_numpy())
+        ax.plot(range(len(cum_pnl)), cum_pnl, label=strat, linewidth=1.5)
+
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xlabel("Markets, in chronological order")
+    ax.set_ylabel("Cumulative P&L ($)")
+    ax.set_title(f"Cumulative P&L by market order — split: {split}", fontsize=12)
+    ax.legend()
+    fig.tight_layout()
+    os.makedirs(figs_dir, exist_ok=True)
+    path = os.path.join(figs_dir, f"equity_curves_{split}.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="val", choices=["train", "val", "test"])
     ap.add_argument("--allow-test", action="store_true")
     ap.add_argument("--out", default=os.path.join(ROOT, "comparison.csv"))
+    ap.add_argument("--no-plots", action="store_true", help="skip writing comparison_figs/")
+    ap.add_argument("--figs-dir", default=FIGS_DIR)
     args = ap.parse_args()
 
     if args.split == "test" and not args.allow_test:
@@ -97,6 +171,12 @@ def main():
 
     summary.to_csv(args.out)
     print(f"\nwrote {args.out}")
+
+    if not args.no_plots:
+        bars_path = plot_headline_bars(summary, args.split, args.figs_dir)
+        curves_path = plot_equity_curves(all_mk, args.split, args.figs_dir)
+        print(f"wrote {bars_path}")
+        print(f"wrote {curves_path}")
 
 
 if __name__ == "__main__":

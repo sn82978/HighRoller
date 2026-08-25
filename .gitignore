@@ -26,3 +26,4 @@ strategies/output/
 BaselineModels/output/
 QLearning/output/
 comparison.csv
+comparison_figs/
