@@ -209,6 +209,8 @@ class MarketResult:
     stake_deployed: float = 0.0
     notional_traded: float = 0.0
     n_trades: int = 0
+    #: entries + early closes; settlement is a redemption, not a fill
+    n_fills: int = 0
     entry_candle: int | None = None
     exit_candle: int | None = None
     winner: str | None = None
@@ -273,6 +275,7 @@ def results_frame(
                 "stake_deployed": r.stake_deployed,
                 "notional_traded": r.notional_traded,
                 "n_trades": r.n_trades,
+                "n_fills": r.n_fills,
                 "entry_candle": r.entry_candle,
                 "exit_candle": r.exit_candle,
                 "early_exit": r.early_exit,

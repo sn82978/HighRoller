@@ -134,6 +134,7 @@ class MarketResult:
     stake_deployed: float
     notional_traded: float
     n_trades: int
+    n_fills: int
     entry_candle: int | None
     exit_candle: int | None
     early_exit: bool
@@ -207,6 +208,7 @@ def simulate_market(
         stake_deployed=float(sum(t.shares * t.price for t in entries)),
         notional_traded=float(sum(t.shares * t.price for t in portfolio.trades)),
         n_trades=len(entries),
+        n_fills=len(portfolio.trades),
         entry_candle=entry_candle,
         exit_candle=exit_candle,
         early_exit=early_exit,

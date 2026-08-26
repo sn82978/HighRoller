@@ -60,6 +60,7 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
                 stake_deployed=float(sum(t.shares * t.price for t in entries)),
                 notional_traded=float(sum(t.shares * t.price for t in trades)),
                 n_trades=len(entries),
+                n_fills=len(trades),
                 entry_candle=entries[0].candle_index if entries else None,
                 exit_candle=(
                     closes[-1].candle_index if closes

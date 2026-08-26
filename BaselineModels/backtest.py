@@ -159,6 +159,7 @@ def run_market(
         stake_deployed=float(sum(t.shares * t.price for t in entries)),
         notional_traded=float(sum(t.shares * t.price for t in traded_before_settle)),
         n_trades=len(entries),
+        n_fills=len(traded_before_settle),
         entry_candle=entry_candle,
         exit_candle=exit_candle,
         winner=winner,

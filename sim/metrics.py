@@ -74,6 +74,7 @@ MARKET_RECORD_FIELDS: tuple[str, ...] = (
     "stake_deployed",
     "notional_traded",
     "n_trades",
+    "n_fills",
     "entry_candle",
     "exit_candle",
     "early_exit",
@@ -199,6 +200,8 @@ def score_records(
         "n_markets": n,
         "n_traded": n_traded,
         "trade_rate": n_traded / n,
+        # Entries plus early closes; settlement is a redemption, not a fill.
+        "total_fills": int(mk.n_fills.sum()) if "n_fills" in mk.columns else int(mk.n_trades.sum()),
         "total_pnl": float(pnl.sum()),
         "gross_pnl": gross,
         "total_fees": fees,
