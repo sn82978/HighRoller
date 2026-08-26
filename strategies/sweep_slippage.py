@@ -7,7 +7,8 @@ whether there's an edge at mid. slippage_frac is a fraction of the candle's
 high-low range, same knob the other models use.
 
     python strategies/sweep_slippage.py
-    python strategies/sweep_slippage.py --slippages 0 0.25 0.5 --split test
+    python strategies/sweep_slippage.py --slippages 0 0.25 0.5 --split dev
+    python strategies/sweep_slippage.py --split test --allow-test   # once, at the end
 """
 
 import argparse
@@ -43,7 +44,14 @@ def run(df, slippage_frac, threshold, stake, hold_side, split):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", default="all", choices=["train", "val", "test", "all"])
+    ap.add_argument(
+        "--split", default="val", choices=["train", "val", "test", "dev", "all"],
+        help="'dev' is train+val; 'test' and 'all' need --allow-test",
+    )
+    ap.add_argument(
+        "--allow-test", action="store_true",
+        help="permit reading the held-out block (one run, at the very end)",
+    )
     ap.add_argument("--days", type=int)
     ap.add_argument("--threshold", type=float, default=0.55)
     ap.add_argument("--stake", type=float, default=100.0)
@@ -58,7 +66,10 @@ def main():
     ap.add_argument("--out", default=os.path.join(OUT_DIR, "slippage_sweep.csv"))
     args = ap.parse_args()
 
-    df = load_candles(args.split, args.days)
+    try:
+        df = load_candles(args.split, args.days, allow_test=args.allow_test)
+    except PermissionError as exc:
+        raise SystemExit(f"refusing to run: {exc}") from None
     out = []
     for s in args.slippages:
         mk = run(df, s, args.threshold, args.stake, args.hold_side, args.split)

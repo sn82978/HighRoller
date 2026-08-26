@@ -12,7 +12,12 @@ from typing import Callable, Iterable
 
 import pandas as pd
 
-from BaselineModels.data_loader import compute_bounds, load_split, market_universe
+from BaselineModels.data_loader import (
+    SPLIT_NAMES,
+    compute_bounds,
+    load_split,
+    market_universe,
+)
 from sim.execution import BUY_DOWN, BUY_UP, ExecutionConfig, Portfolio, Side
 from sim.metrics import MARKET_RECORD_FIELDS, MARKETS_PER_YEAR, score_records
 
@@ -27,8 +32,10 @@ __all__ = [
     "SETTLEMENT_CANDLE",
     "MARKET_RECORD_FIELDS",
     "MARKETS_PER_YEAR",
+    "UNIVERSES",
     "market_slugs",
     "load_split_candles",
+    "load_universe_candles",
     "MarketResult",
     "simulate_market",
     "results_to_frame",
@@ -46,14 +53,61 @@ def market_slugs(split: str, dataset: str = "candles_15s", *, allow_test: bool =
     return set(keep.event_slug)
 
 
-def load_split_candles(split: str, *, allow_test: bool = False) -> pd.DataFrame:
-    """live-window candles for a split, with next_open/high/low added for fills."""
-    df = load_split(split, dataset="candles_15s", allow_test=allow_test)
+def _add_next_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """Live-window rows, sorted, carrying the next candle's OHLC for fills."""
     df = df[df.candle_index >= 0].sort_values(["event_slug", "candle_index"], ignore_index=True)
     g = df.groupby("event_slug", sort=False)
     for col in ("open", "high", "low"):
         df[f"next_{col}"] = g[col].shift(-1)
     return df
+
+
+def load_split_candles(split: str, *, allow_test: bool = False) -> pd.DataFrame:
+    """live-window candles for a split, with next_open/high/low added for fills."""
+    return _add_next_ohlc(load_split(split, dataset="candles_15s", allow_test=allow_test))
+
+
+#: Multi-split universes. "dev" is everything you may iterate on freely; "all"
+#: additionally contains the held-out block and is gated behind allow_test.
+UNIVERSES: dict[str, tuple[str, ...]] = {
+    "dev": ("train", "val"),
+    "all": ("train", "val", "test"),
+}
+
+
+def load_universe_candles(name: str, *, allow_test: bool = False) -> pd.DataFrame:
+    """Candles for one split or one named multi-split universe.
+
+    The single place a multi-split load is allowed to happen, because the last
+    one was not: ``strategies/generate_trades.py`` built its own "all" universe
+    by calling ``load_split("test", allow_test=True)`` with the flag hardcoded,
+    and ``--split all`` was its default. Every headline number that track has
+    published was therefore computed over the held-out block, while the progress
+    report states in two places that the test split has never been read.
+
+    ``data_loader.load_split`` refuses the test split without ``allow_test``,
+    but that guard only works if no caller hardcodes the flag. Routing every
+    multi-split load through here means the flag has to come from the caller's
+    own ``--allow-test``, so reading the held-out block stays a deliberate act
+    that shows up in a shell history and a diff.
+    """
+    if name in SPLIT_NAMES:
+        return load_split_candles(name, allow_test=allow_test)
+    try:
+        parts = UNIVERSES[name]
+    except KeyError:
+        raise ValueError(
+            f"unknown universe {name!r}; expected one of "
+            f"{sorted(SPLIT_NAMES) + sorted(UNIVERSES)}"
+        ) from None
+    if "test" in parts and not allow_test:
+        raise PermissionError(
+            f"universe {name!r} contains the held-out test split. Use 'dev' "
+            "(train+val) while iterating, or pass allow_test=True for the single "
+            "final evaluation reported in the paper."
+        )
+    frames = [load_split(s, dataset="candles_15s", allow_test=allow_test) for s in parts]
+    return _add_next_ohlc(pd.concat(frames, ignore_index=True))
 
 
 DecideFn = Callable[[pd.Series, Portfolio, int], int]

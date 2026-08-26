@@ -3,16 +3,28 @@
 Two hand-written strategies to benchmark the learned agents against.
 
 ```bash
-python strategies/generate_trades.py --split all   # writes fills / markets CSVs
+python strategies/generate_trades.py --split dev   # writes fills / markets CSVs
 python strategies/analyze_trades.py                # scores them, prints the metrics
-python strategies/sweep_slippage.py --split all     # re-runs both across fill assumptions
+python strategies/sweep_slippage.py --split dev    # re-runs both across fill assumptions
 ```
 
 Fills/fees/slippage go through `sim.execution.Portfolio` via `sim.evaluation.simulate_market`
 -- same engine as `BaselineModels/xgb_baseline.py` and `QLearning/`, so P&L numbers are
-comparable across models. Market split comes from `BaselineModels.data_loader`
-(`--split {train,val,test}`, or `all` for the full dataset). See `sim/compare_models.py`
-to put this side by side with the other models.
+comparable across models. Market universe comes from `sim.evaluation.load_universe_candles`
+(`--split {train,val,test}`, `dev` for train+val, or `all` for the whole tape). See
+`sim/compare_models.py` to put this side by side with the other models.
+
+> **The numbers in this file were computed over the held-out test split.**
+> `--split all` used to be the default here, and it built its universe by calling
+> `load_split("test", allow_test=True)` with the flag hardcoded, so the ordinary
+> invocation read all 1,332 test markets. Every figure in the tables below --- and
+> in the progress report's Tables 6 and 7, which come from them --- is therefore
+> computed over train + val + test, while the report states in two places that the
+> test split has never been read.
+>
+> `--split all` and `--split test` now refuse to run without an explicit
+> `--allow-test`, and the default is `val`. Use `dev` (train + val) to iterate.
+> The tables below are stale and are regenerated on `dev` before they are cited.
 
 Note: an older version of this script charged slippage but never charged Polymarket's
 7% taker fee, so if you've seen a `momentum_flip` number like `+$28,920` floating around,
@@ -41,6 +53,12 @@ resolution regardless of what happens. `--hold-side Up` for the other leg.
 - 53 of 8,608 markets are skipped for an incomplete or unresolved live window.
 
 ## Results, `--split all`, zero slippage
+
+**Stale and test-contaminated --- see the warning at the top.** This table covers
+train + val + test. It is kept here only so the contaminated figures are
+identifiable if they turn up in a draft; regenerate on `dev` before citing
+anything. The `max drawdown` signs are also from the old `sim.evaluation.score`,
+which reported drawdown as a negative number; it is a positive magnitude now.
 
 | | momentum_flip | buy_and_hold_down |
 |---|---|---|
@@ -90,7 +108,8 @@ Outputs are gitignored (`*.csv`) — regenerate with the commands above.
 ## Useful flags
 
 ```bash
---split {train,val,test,all}   # market universe; canonical split or the full dataset
+--split {train,val,test,dev,all}  # market universe; 'dev' is train+val
+--allow-test                    # required for 'test' or 'all'; one run, at the very end
 --threshold 0.6                 # move the entry/flip trigger
 --slippage 0.25                 # ExecutionConfig.slippage_frac (fraction of candle H-L range)
 --days 30                       # last N days within the split, for a quick run

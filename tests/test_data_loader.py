@@ -51,6 +51,35 @@ def test_unknown_split_raises():
         load_split("holdout", DATASET)
 
 
+# -- the same guard, one layer up -----------------------------------------
+# load_split's refusal only works if no caller hardcodes allow_test=True.
+# strategies/generate_trades.py did exactly that to build its "all" universe,
+# and "all" was its default, so its ordinary invocation read the held-out block.
+def test_all_universe_refuses_without_allow_test():
+    from sim.evaluation import load_universe_candles
+
+    with pytest.raises(PermissionError, match="held-out test split"):
+        load_universe_candles("all")
+
+
+def test_dev_universe_is_train_plus_val_and_never_touches_test():
+    from sim.evaluation import load_universe_candles, market_slugs
+
+    dev = set(load_universe_candles("dev").event_slug)
+    assert dev & market_slugs("train")
+    assert dev & market_slugs("val")
+    assert not (dev & market_slugs("test", allow_test=True)), (
+        "the 'dev' universe leaked held-out markets"
+    )
+
+
+def test_unknown_universe_raises():
+    from sim.evaluation import load_universe_candles
+
+    with pytest.raises(ValueError, match="unknown universe"):
+        load_universe_candles("everything")
+
+
 def test_unknown_dataset_raises():
     with pytest.raises(ValueError, match="unknown dataset"):
         dataset_files("candles_5s")

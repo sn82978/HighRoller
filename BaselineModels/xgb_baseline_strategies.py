@@ -152,7 +152,8 @@ def main():
         return
 
     eval_feat = val_feat if args.split == "val" else (
-        train_feat if args.split == "train" else build_split_features("test", allow_test=True)
+        train_feat if args.split == "train"
+        else build_split_features("test", allow_test=args.allow_test)
     )
     mk, fills = run_backtest(eval_feat, model, args.threshold, args.split, config)
 

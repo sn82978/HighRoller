@@ -50,8 +50,15 @@ def get_eval_data() -> list[pd.DataFrame]:
     return episodes
 
 
-def get_test_data() -> list[pd.DataFrame]:
-    df = load_split_candles("test", allow_test=True)
+def get_test_data(*, allow_test: bool = False) -> list[pd.DataFrame]:
+    """Held-out episodes. Needs allow_test spelled out at the call site.
+
+    This hardcoded allow_test=True, so any caller that reached it read the
+    held-out block whether or not that was the intent. It is only reachable
+    from a commented-out block in training.py today, which is exactly the kind
+    of line someone uncomments without reading.
+    """
+    df = load_split_candles("test", allow_test=allow_test)
     episodes = prepare_episodes(df)
     print(f"{len(episodes)} test episodes")
     return episodes
