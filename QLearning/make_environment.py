@@ -76,9 +76,13 @@ class StepInfo:
 
 class TradingEnv:
 
-    def __init__(self, episodes, config: ExecutionConfig | None = None):
+    def __init__(self, episodes, config: ExecutionConfig | None = None, seed=None):
         if not episodes:
-            print("no episodes")
+            raise ValueError(
+                "TradingEnv got no episodes. This used to print 'no episodes' and "
+                "carry on, so the next reset() died on an empty-range integers() "
+                "call somewhere unrelated."
+            )
 
         self.episodes = episodes
         self.config = config or ExecutionConfig()
@@ -86,7 +90,10 @@ class TradingEnv:
         self._i = 0 # which candle row are we in rn
         self.portfolio = Portfolio(config=self.config)
         self._entry_price = 0.0 # Up-equivalent price the open position was entered at
-        self._rng = np.random.default_rng() # initalizes the rng to pick a random market next time
+        # Seeded: which markets a training run visits is part of the run, and an
+        # unseeded default_rng() here made the reported 30-run spread impossible
+        # to reproduce.
+        self._rng = np.random.default_rng(seed)
 
     def _get_state(self):
         row = self._ep.iloc[self._i]
