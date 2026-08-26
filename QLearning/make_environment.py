@@ -164,8 +164,12 @@ class TradingEnv:
             elif is_last_step or pd.isna(row.get("next_open")):
                 was_valid = False  # no next candle to fill a close against
             else:
+                # stamped with the candle the trade FILLS on, not the one that
+                # signalled it -- same convention as backtest.py and
+                # sim.evaluation, so holding periods mean one thing repo-wide.
                 was_valid = self.portfolio.close(
-                    row["next_open"], row["next_high"], row["next_low"], int(row["candle_index"])
+                    row["next_open"], row["next_high"], row["next_low"],
+                    int(row["candle_index"]) + 1,
                 )
                 if was_valid:
                     self._entry_price = 0.0
@@ -177,10 +181,16 @@ class TradingEnv:
             else:
                 side = Side.UP if action == BUY_UP else Side.DOWN
                 was_valid = self.portfolio.buy(
-                    side, row["next_open"], row["next_high"], row["next_low"], int(row["candle_index"])
+                    side, row["next_open"], row["next_high"], row["next_low"],
+                    int(row["candle_index"]) + 1,
                 )
                 if was_valid:
-                    self._entry_price = row["next_open"] if side is Side.UP else 1.0 - row["next_open"]
+                    # the price actually paid, slippage included -- not the raw
+                    # next_open. The pnl_bucket the agent observes is measured
+                    # against this, so using the un-slipped mid would tell it it
+                    # was up on a position it had just paid the spread to open.
+                    entry = self.portfolio.trades[-1]
+                    self._entry_price = entry.price
         else:
             raise ValueError(f"unknown action {action!r}")
 
@@ -205,7 +215,13 @@ class TradingEnv:
             _SIDE_TO_BUCKET[self.portfolio.side],
             reward,
             fee=fee,
-            gross_pnl=max(0.0, reward + fee),
+            # Unclamped. This used to be max(0.0, reward + fee), which dropped
+            # every losing step from the gross-PnL total while keeping its fees,
+            # so the fee-drag ratio built on it read 6.9% where the honest
+            # figure was 147.3% -- a factor of 21.5 on identical trades, and
+            # flattering exactly when the policy was doing worst. Fee drag is
+            # now computed once, in sim.metrics, off net gross PnL.
+            gross_pnl=reward + fee,
         )
         done = is_last_step
 

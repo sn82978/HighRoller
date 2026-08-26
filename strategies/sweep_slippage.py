@@ -18,6 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import numpy as np
 import pandas as pd
 
 from sim.evaluation import LAST_INDEX, results_to_frame, simulate_market
@@ -62,14 +63,19 @@ def main():
     for s in args.slippages:
         mk = run(df, s, args.threshold, args.stake, args.hold_side, args.split)
         for name, g in mk.groupby("strategy"):
+            deployed = float(g.stake_deployed.sum())
+            traded = g[g.n_trades > 0]
             out.append(
                 dict(
                     slippage_frac=s,
                     strategy=name,
                     total_pnl=g.pnl.sum(),
-                    avg_return_pct=g.return_pct.mean(),
-                    win_rate_pct=(g.pnl > 0).mean() * 100,
-                    roi_pct=g.pnl.sum() / (g.stake.sum()) * 100,
+                    avg_return_pct=float(np.mean(
+                        np.where(g.stake_deployed > 0,
+                                 g.pnl / g.stake_deployed.where(g.stake_deployed > 0, 1.0),
+                                 0.0))) * 100,
+                    win_rate_pct=(traded.pnl > 0).mean() * 100 if len(traded) else float("nan"),
+                    pnl_per_1k_deployed=g.pnl.sum() / deployed * 1000 if deployed else 0.0,
                 )
             )
         print(f"  slippage_frac {s:<6} done")

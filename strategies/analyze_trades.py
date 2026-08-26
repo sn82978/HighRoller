@@ -40,7 +40,14 @@ def max_drawdown_pct(equity):
 
 
 def sparkline(values, width=64):
+    # Windows consoles default to cp1252, which cannot encode the block glyphs
+    # and raised UnicodeEncodeError mid-report. Fall back to ASCII rather than
+    # crash after printing half the numbers.
     blocks = "▁▂▃▄▅▆▇█"
+    try:
+        "".join(blocks).encode(sys.stdout.encoding or "utf-8")
+    except (UnicodeEncodeError, LookupError):
+        blocks = ".:-=+*#@"
     v = np.asarray(values, dtype=float)
     if len(v) > width:
         v = v[np.linspace(0, len(v) - 1, width).astype(int)]
@@ -51,10 +58,37 @@ def sparkline(values, width=64):
     return "".join(blocks[i] for i in idx)
 
 
+def per_market_return(mk):
+    """PnL over the capital that market risked; 0.0 where none was.
+
+    Denominator is the per-market allotment, not the sum of entry notionals --
+    see sim.metrics._capital_basis for why that distinction flips the sign of
+    this number on a policy that re-enters.
+    """
+    basis = capital_basis(mk)
+    pnl = mk.pnl.to_numpy(dtype=float)
+    return np.where(basis > 0, pnl / np.where(basis > 0, basis, 1.0), 0.0)
+
+
+def capital_basis(mk):
+    deployed = mk.stake_deployed.to_numpy(dtype=float)
+    if "stake" not in mk.columns:
+        return deployed
+    stake = pd.to_numeric(mk.stake, errors="coerce").to_numpy(dtype=float)
+    return np.where(np.isfinite(stake) & (stake > 0), stake, deployed)
+
+
+def typical_stake(mk):
+    """The per-market bankroll, read off the markets that actually traded."""
+    basis = capital_basis(mk)
+    basis = basis[basis > 0]
+    return float(np.median(basis)) if basis.size else 0.0
+
+
 def compounded_view(mk, fraction):
     mk = mk.sort_values("start_ts").reset_index(drop=True)
-    ret = mk.return_pct.to_numpy() / 100.0
-    stake = float(mk.stake.iloc[0])
+    ret = per_market_return(mk)
+    stake = typical_stake(mk) or 100.0
     equity = stake * np.cumprod(1.0 + fraction * ret)
     dd, dd_i = max_drawdown_pct(equity)
     return equity, dd, dd_i
@@ -73,37 +107,44 @@ def report(s, mk, fraction):
     p = lambda label, val: print(f"  {label:<32}{val:>18}")
     print(f"\n{'=' * 72}\n  {s['strategy'].upper()}  (split: {s['split']})\n{'=' * 72}")
 
-    print("\n  ACTIVITY")
-    p("markets in sample", fmt(s["markets"]))
-    p("markets traded", f"{fmt(s['markets_traded'])}  ({s['participation_%']:.1f}%)")
+    stake = typical_stake(mk) or 100.0
 
-    print("\n  P&L  (flat $%.0f per market)" % mk.stake.iloc[0])
-    p("total staked", "$" + fmt(s["total_staked"]))
+    print("\n  ACTIVITY")
+    p("markets in sample", fmt(s["n_markets"]))
+    p("markets traded", f"{fmt(s['n_traded'])}  ({s['trade_rate'] * 100:.1f}%)")
+    p("turnover", fmt(s["turnover"], ".3f"))
+    p("avg holding (candles)", fmt(s["avg_holding_candles"], ".1f"))
+
+    print("\n  P&L  (flat $%.0f per entry)" % stake)
+    p("capital deployed", "$" + fmt(s["capital_deployed"]))
     p("total P&L", "$" + fmt(s["total_pnl"]))
-    p("ROI on total staked", f"{s['roi_on_stake_%']:.3f}%")
+    p("P&L per $1k deployed", "$" + fmt(s["pnl_per_1k_deployed"]))
+    p("  gross, before fees", "$" + fmt(s["gross_pnl_per_1k_deployed"]))
+    p("  fees", "$" + fmt(s["fee_per_1k_deployed"]))
     p("avg P&L per market", "$" + fmt(s["avg_pnl_per_market"]))
     p("median P&L per market", "$" + fmt(s["median_pnl"]))
-    p("avg return per market", f"{s['avg_return_%']:.3f}%")
+    p("avg return per market", f"{s['avg_return'] * 100:.3f}%")
     p(
         "  95% CI (bootstrap)",
-        f"[{s['return_ci95_low_%']:.3f}%, {s['return_ci95_high_%']:.3f}%]",
+        f"[{s['return_ci95_lo'] * 100:.3f}%, {s['return_ci95_hi'] * 100:.3f}%]",
     )
 
     print("\n  QUALITY")
-    p("win rate (market P&L > 0)", f"{s['win_rate_%']:.2f}%")
+    p("win rate (traded markets)", f"{s['win_rate'] * 100:.2f}%")
     p("profit factor", fmt(s["profit_factor"], ".3f"))
+    p("fees / gross P&L", fmt(s["fee_fraction_gross_pnl"], ".3f"))
     p("Sharpe per market", fmt(s["sharpe_per_market"], ".4f"))
-    p("Sharpe annualized", fmt(s["sharpe_annualized"], ".2f"))
+    p("Sharpe annualized", fmt(s["sharpe"], ".2f"))
     p("t-stat vs zero edge", fmt(s["t_stat"], ".2f"))
 
     print("\n  EQUITY")
     p("cumulative P&L", "$" + fmt(s["total_pnl"]))
-    p("max drawdown", "$" + fmt(s["max_drawdown_$"]))
-    p("  in units of one stake", f"{abs(s['max_drawdown_stakes']):.1f} stakes")
+    p("max drawdown", "$" + fmt(s["max_drawdown"]))
+    p("  in units of one stake", f"{s['max_drawdown'] / stake:.1f} stakes")
 
     equity, comp_dd, _ = compounded_view(mk, fraction)
     p(f"compounded @ {fraction:.0%} of bankroll", "$" + fmt(equity[-1]))
-    p("  growth", f"{equity[-1] / mk.stake.iloc[0]:.4g}x")
+    p("  growth", f"{equity[-1] / stake:.4g}x")
     p("  max drawdown", f"{comp_dd * 100:.2f}%")
 
     cum_pnl = np.cumsum(mk.sort_values('start_ts').pnl.to_numpy())
@@ -146,16 +187,19 @@ def main():
     summary = pd.DataFrame(rows).set_index("strategy").T
     print(f"\n{'=' * 72}\n  SIDE BY SIDE\n{'=' * 72}")
     headline = [
-        "markets_traded",
+        "n_traded",
         "total_pnl",
-        "roi_on_stake_%",
-        "avg_return_%",
-        "win_rate_%",
+        "pnl_per_1k_deployed",
+        "gross_pnl_per_1k_deployed",
+        "fee_per_1k_deployed",
+        "avg_return",
+        "win_rate",
         "profit_factor",
         "sharpe_per_market",
-        "sharpe_annualized",
+        "sharpe",
         "t_stat",
-        "max_drawdown_$",
+        "max_drawdown",
+        "turnover",
     ]
     print(summary.loc[headline].to_string(float_format=lambda x: f"{x:,.4f}"))
 

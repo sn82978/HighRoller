@@ -13,7 +13,7 @@ from make_environment import TradingEnv
 from q_learning_agent import QLearningAgent
 from make_environment import StepInfo
 
-from sim.evaluation import score
+from sim.evaluation import SETTLEMENT_CANDLE, score
 from sim.execution import ACTION_NAMES, ExecutionConfig, HOLD, BUY_UP, BUY_DOWN, CLOSE
 
 # repo-relative now instead of hardcoded to shreya's machine
@@ -42,6 +42,11 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
 
         ep = env._ep
         last = ep.iloc[-1]
+        # Same interchange schema every other track writes (sim.metrics), so
+        # compare_models.py scores the agent with the identical function.
+        trades = env.portfolio.trades
+        entries = [t for t in trades if t.action in (BUY_UP, BUY_DOWN)]
+        closes = [t for t in trades if t.action == CLOSE]
         market_rows.append(
             dict(
                 strategy=model_name,
@@ -50,9 +55,16 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
                 split=env_name,
                 stake=env.config.stake_dollars,
                 pnl=env.portfolio.cash,
-                return_pct=env.portfolio.cash / env.config.stake_dollars * 100.0,
-                traded=bool(env.portfolio.trades),
-                n_legs=len(env.portfolio.trades),
+                fees=env.portfolio.fees_paid,
+                stake_deployed=float(sum(t.shares * t.price for t in entries)),
+                notional_traded=float(sum(t.shares * t.price for t in trades)),
+                n_trades=len(entries),
+                entry_candle=entries[0].candle_index if entries else None,
+                exit_candle=(
+                    closes[-1].candle_index if closes
+                    else (SETTLEMENT_CANDLE if entries else None)
+                ),
+                early_exit=bool(closes),
                 winner=str(last.winner),
             )
         )

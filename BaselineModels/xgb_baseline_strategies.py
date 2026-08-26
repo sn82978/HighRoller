@@ -145,8 +145,8 @@ def main():
             mk, _ = run_backtest(val_feat, model, t, "val", config)
             s = score(mk)
             print(
-                f"  threshold {t:.2f}  markets_traded={s['markets_traded']:>4}  "
-                f"total_pnl=${s['total_pnl']:>9,.2f}  avg_return={s['avg_return_%']:>7.3f}%  "
+                f"  threshold {t:.2f}  n_traded={s['n_traded']:>4}  "
+                f"total_pnl=${s['total_pnl']:>9,.2f}  avg_return={s['avg_return'] * 100:>7.3f}%  "
                 f"t_stat={s['t_stat']:>6.2f}"
             )
         return

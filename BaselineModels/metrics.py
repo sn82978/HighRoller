@@ -21,10 +21,25 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-# 15-minute markets in a year: 4/hour * 24 * 365. Used to annualise the
-# per-market Sharpe. Worth stating explicitly in the writeup since Sharpe means
-# nothing without knowing what period it was scaled from.
-MARKETS_PER_YEAR = 35_040
+# The trading metrics themselves live in sim.metrics, which is the single
+# definition shared with the strategies and Q-learning tracks. Re-exported here
+# so existing `from BaselineModels.metrics import ...` call sites keep working.
+from sim.metrics import MARKETS_PER_YEAR, comparison_table, score_records
+
+__all__ = [
+    "log_loss",
+    "brier",
+    "expected_calibration_error",
+    "calibration_table",
+    "probability_metrics",
+    "auc_by_horizon",
+    "paired_bootstrap_logloss",
+    "MarketResult",
+    "results_frame",
+    "trading_metrics",
+    "comparison_table",
+    "MARKETS_PER_YEAR",
+]
 
 _EPS = 1e-15
 
@@ -187,6 +202,10 @@ class MarketResult:
     event_slug: str
     pnl: float = 0.0
     fees: float = 0.0
+    #: Capital allotted to this market -- the denominator for per-market return.
+    #: Left 0.0 by callers that only ever take one entry, where it equals
+    #: stake_deployed and sim.metrics falls back to that.
+    stake: float = 0.0
     stake_deployed: float = 0.0
     notional_traded: float = 0.0
     n_trades: int = 0
@@ -211,28 +230,58 @@ class MarketResult:
         return float(self.exit_candle - self.entry_candle)
 
     @property
+    def capital_basis(self) -> float:
+        """Capital at risk in this market: the allotment, else the entry notional."""
+        return self.stake if self.stake > 0 else self.stake_deployed
+
+    @property
     def market_return(self) -> float:
-        """PnL as a fraction of the capital this market actually used."""
-        return self.pnl / self.stake_deployed if self.stake_deployed > 0 else 0.0
+        """PnL as a fraction of the capital this market actually risked."""
+        basis = self.capital_basis
+        return self.pnl / basis if basis > 0 else 0.0
 
 
-def results_frame(results: list[MarketResult]) -> pd.DataFrame:
-    """Per-market results as a frame. Use for drawdown plots and error bars."""
+def results_frame(
+    results: list[MarketResult],
+    *,
+    strategy: str = "",
+    split: str = "",
+    start_ts: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """Per-market results in the interchange schema of :mod:`sim.metrics`.
+
+    Carries :data:`sim.metrics.MARKET_RECORD_FIELDS` so the frame can be scored
+    by :func:`sim.metrics.score_records`, written as a markets.csv, and compared
+    against the other tracks without any renaming in between. ``gross_pnl``,
+    ``traded``, ``holding_candles`` and ``market_return`` are kept alongside as
+    derived conveniences for plots.
+
+    ``start_ts`` maps event_slug -> market start, used to order the cumulative
+    PnL path. Without it the column is 0 and the caller's own ordering stands.
+    """
+    start_ts = start_ts or {}
     return pd.DataFrame(
         [
             {
+                "strategy": strategy,
                 "event_slug": r.event_slug,
+                "start_ts": int(start_ts.get(r.event_slug, 0)),
+                "split": split,
+                "stake": r.stake,
                 "pnl": r.pnl,
-                "gross_pnl": r.gross_pnl,
                 "fees": r.fees,
                 "stake_deployed": r.stake_deployed,
                 "notional_traded": r.notional_traded,
                 "n_trades": r.n_trades,
+                "entry_candle": r.entry_candle,
+                "exit_candle": r.exit_candle,
+                "early_exit": r.early_exit,
+                "winner": r.winner,
+                # derived, for plotting -- score_records recomputes what it needs
+                "gross_pnl": r.gross_pnl,
                 "traded": r.traded,
                 "holding_candles": r.holding_candles,
                 "market_return": r.market_return,
-                "early_exit": r.early_exit,
-                "winner": r.winner,
             }
             for r in results
         ]
@@ -244,69 +293,17 @@ def trading_metrics(
 ) -> dict[str, float]:
     """The trading table from the proposal, for one policy.
 
-    Two definitions that are easy to get wrong:
+    A thin adapter now: it turns ``MarketResult`` objects into the interchange
+    schema and hands them to :func:`sim.metrics.score_records`, which is the one
+    place any of these quantities is defined. The strategies and Q-learning
+    tracks reach the same function from the other side, starting from a
+    committed markets.csv, so all three are scored by the same code rather than
+    by three implementations that happen to use the same words.
 
-    pnl_per_1k_deployed divides by the capital the policy actually committed,
-    not by some notional $1,000 account. A policy that trades 2 markets out of
-    5,900 and makes $1 isn't comparable to one that trades all of them unless
-    the denominator moves too.
-
-    fee_fraction_gross_pnl is NaN when gross PnL <= 0, since "fees ate 140% of
-    a negative number" doesn't mean anything. Don't change this to return 0 --
-    a hard zero here is what a fee accumulator that was never wired up looks
-    like, and we want those to be obvious.
+    Read :mod:`sim.metrics` for the definitions themselves, in particular why
+    Sharpe is taken over every market in the split while win rate is taken over
+    traded markets only.
     """
-    n = len(results)
-    if n == 0:
+    if not results:
         raise ValueError("no markets to score")
-
-    traded = [r for r in results if r.traded]
-    pnl = np.array([r.pnl for r in results], dtype=float)
-    fees = float(sum(r.fees for r in results))
-    deployed = float(sum(r.stake_deployed for r in results))
-    notional = float(sum(r.notional_traded for r in results))
-    gross = float(pnl.sum()) + fees
-
-    # Only count markets we actually took a position in. Markets we sat out
-    # carry no risk, and including them as zeros would deflate the vol.
-    rets = np.array([r.market_return for r in traded], dtype=float)
-    if len(rets) > 1 and rets.std(ddof=1) > 0:
-        sharpe = float(rets.mean() / rets.std(ddof=1) * np.sqrt(markets_per_year))
-    else:
-        sharpe = float("nan")
-
-    # Drawdown along the cumulative PnL path, in the order markets resolved.
-    cum = np.cumsum(pnl)
-    peak = np.maximum.accumulate(cum)
-    max_dd = float(np.max(peak - cum)) if n else 0.0
-
-    holding = np.array([r.holding_candles for r in traded], dtype=float)
-
-    return {
-        "n_markets": n,
-        "n_traded": len(traded),
-        "trade_rate": len(traded) / n,
-        "total_pnl": float(pnl.sum()),
-        "gross_pnl": gross,
-        "capital_deployed": deployed,
-        "pnl_per_1k_deployed": float(pnl.sum() / deployed * 1000.0) if deployed > 0 else 0.0,
-        "sharpe": sharpe,
-        "win_rate": float((np.array([r.pnl for r in traded]) > 0).mean()) if traded else float("nan"),
-        "max_drawdown": max_dd,
-        "turnover": float(notional / deployed) if deployed > 0 else 0.0,
-        "total_fees": fees,
-        "fee_fraction_gross_pnl": float(fees / gross) if gross > 0 else float("nan"),
-        # These two are always defined, unlike the ratio above, which goes NaN
-        # exactly when we lose money (i.e. the cases we most need to explain).
-        # Put fee_per_1k next to pnl_per_1k and the gap between them is the
-        # gross edge. That's the comparison the writeup wants.
-        "fee_per_1k_deployed": float(fees / deployed * 1000.0) if deployed > 0 else 0.0,
-        "gross_pnl_per_1k_deployed": float(gross / deployed * 1000.0) if deployed > 0 else 0.0,
-        "avg_holding_candles": float(np.nanmean(holding)) if len(holding) else float("nan"),
-        "early_exit_rate": float(np.mean([r.early_exit for r in traded])) if traded else 0.0,
-    }
-
-
-def comparison_table(named: dict[str, dict[str, float]]) -> pd.DataFrame:
-    """Stack a few policies' trading_metrics into one table for the paper."""
-    return pd.DataFrame(named).T.rename_axis("policy").reset_index()
+    return score_records(results_frame(results), markets_per_year)

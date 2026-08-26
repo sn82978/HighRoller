@@ -151,6 +151,11 @@ def run_market(
         event_slug=slug,
         pnl=port.cash,
         fees=port.fees_paid,
+        # Capital allotted to this market. stake_deployed below sums every
+        # entry's notional, which is the right denominator for turnover but not
+        # for return: a policy that rolls one position through several entries
+        # never had more than one stake at risk.
+        stake=config.stake_dollars,
         stake_deployed=float(sum(t.shares * t.price for t in entries)),
         notional_traded=float(sum(t.shares * t.price for t in traded_before_settle)),
         n_trades=len(entries),

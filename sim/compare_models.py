@@ -45,11 +45,11 @@ def plot_headline_bars(summary: pd.DataFrame, split: str, figs_dir: str) -> str:
     """One PNG, one bar-chart panel per headline metric, all strategies side by side."""
     metrics = [
         ("total_pnl", "Total P&L ($)"),
-        ("avg_return_%", "Avg return / market (%)"),
-        ("win_rate_%", "Win rate (%)"),
+        ("avg_return", "Avg return / market"),
+        ("win_rate", "Win rate (traded markets)"),
         ("profit_factor", "Profit factor"),
-        ("sharpe_annualized", "Sharpe (annualized)"),
-        ("max_drawdown_$", "Max drawdown ($)"),
+        ("sharpe", "Sharpe (annualized)"),
+        ("max_drawdown", "Max drawdown ($)"),
     ]
     strategies = list(summary.index)
     colors = plt.cm.tab10(np.linspace(0, 1, len(strategies)))
@@ -58,11 +58,11 @@ def plot_headline_bars(summary: pd.DataFrame, split: str, figs_dir: str) -> str:
     for ax, (col, title) in zip(axes.flat, metrics):
         values = summary[col].to_numpy(dtype=float)
         bars = ax.bar(strategies, values, color=colors)
-        if col == "avg_return_%":
-            lo = summary["avg_return_%"] - summary["return_ci95_low_%"]
-            hi = summary["return_ci95_high_%"] - summary["avg_return_%"]
+        if col == "avg_return":
+            lo = (summary["avg_return"] - summary["return_ci95_lo"]).to_numpy(dtype=float)
+            hi = (summary["return_ci95_hi"] - summary["avg_return"]).to_numpy(dtype=float)
             ax.errorbar(
-                strategies, values, yerr=[lo.to_numpy(), hi.to_numpy()],
+                strategies, values, yerr=[np.abs(lo), np.abs(hi)],
                 fmt="none", ecolor="black", capsize=4,
             )
         ax.axhline(0, color="black", linewidth=0.8)
@@ -154,18 +154,22 @@ def main():
 
     print(f"\n{'=' * 100}\n  CROSS-MODEL COMPARISON  (split: {args.split})\n{'=' * 100}")
     cols = [
-        "markets",
-        "markets_traded",
+        "n_markets",
+        "n_traded",
         "total_pnl",
-        "roi_on_stake_%",
-        "avg_return_%",
-        "return_ci95_low_%",
-        "return_ci95_high_%",
-        "win_rate_%",
+        "pnl_per_1k_deployed",
+        "gross_pnl_per_1k_deployed",
+        "fee_per_1k_deployed",
+        "avg_return",
+        "return_ci95_lo",
+        "return_ci95_hi",
+        "win_rate",
         "profit_factor",
-        "sharpe_annualized",
+        "sharpe",
         "t_stat",
-        "max_drawdown_$",
+        "max_drawdown",
+        "turnover",
+        "avg_holding_candles",
     ]
     print(summary[cols].to_string(float_format=lambda x: f"{x:,.3f}"))
 

@@ -23,11 +23,15 @@ from BaselineModels.metrics import (
 )
 
 
-def _res(slug, pnl, fees=0.0, stake=100.0, notional=100.0, n=1, entry=1, exit_=60, early=False):
+def _res(slug, pnl, fees=0.0, stake=100.0, notional=100.0, n=1, entry=1, exit_=60,
+         early=False, stake_alloc=0.0):
+    """`stake` is the summed entry notional (stake_deployed); `stake_alloc` is
+    the per-market bankroll. They differ only for policies that re-enter."""
     return MarketResult(
         event_slug=slug,
         pnl=pnl,
         fees=fees,
+        stake=stake_alloc,
         stake_deployed=stake,
         notional_traded=notional,
         n_trades=n,
@@ -192,6 +196,91 @@ def test_win_rate_counts_only_markets_that_traded():
 def test_scoring_an_empty_run_raises_rather_than_returning_zeros():
     with pytest.raises(ValueError):
         trading_metrics([])
+
+
+# -- the definitions the two harnesses used to disagree on ----------------
+def _untraded(slug):
+    return _res(slug, 0.0, stake=0.0, notional=0.0, n=0, entry=None, exit_=None)
+
+
+def test_sharpe_counts_markets_the_policy_sat_out():
+    """A selective policy must not be flattered against an always-on one.
+
+    Scoring an agent only on the markets it chose hides that its capital was
+    idle everywhere else. Sitting out is a real outcome with a real zero return,
+    so it belongs in the series. This is the call the two harnesses disagreed on
+    and the reason a four-way comparison was not previously possible.
+    """
+    picky = [_res("a", 10.0), _res("b", -5.0)] + [_untraded(f"s{i}") for i in range(8)]
+    rets = np.array([0.10, -0.05] + [0.0] * 8)
+    expected = rets.mean() / rets.std(ddof=1) * np.sqrt(MARKETS_PER_YEAR)
+    assert trading_metrics(picky)["sharpe"] == pytest.approx(expected)
+
+    # And the traded-only reading, which we deliberately do NOT report, differs.
+    traded_only = np.array([0.10, -0.05])
+    traded_only_sharpe = traded_only.mean() / traded_only.std(ddof=1) * np.sqrt(MARKETS_PER_YEAR)
+    assert not np.isclose(expected, traded_only_sharpe)
+
+
+def test_win_rate_still_ignores_markets_the_policy_sat_out():
+    """Sharpe counts them, win rate does not -- they answer different questions."""
+    picky = [_res("a", 10.0), _res("b", -5.0)] + [_untraded(f"s{i}") for i in range(8)]
+    assert trading_metrics(picky)["win_rate"] == pytest.approx(0.5)
+
+
+def test_max_drawdown_counts_a_loss_on_the_very_first_market():
+    """Peak starts at 0, not at market one's PnL.
+
+    Seeding the peak with the first market's result measures the drawdown from
+    the bottom of a hole already dug, so a policy that only ever loses reports a
+    drawdown smaller than its own total loss.
+    """
+    results = [_res("a", -40.0), _res("b", -10.0)]
+    assert trading_metrics(results)["max_drawdown"] == pytest.approx(50.0)
+
+
+def test_return_denominator_is_the_allotment_not_the_sum_of_entries():
+    """A rolled position never risked more than one stake, so don't charge it more.
+
+    Caught on a real val run: momentum_flip re-enters up to 12 times, and using
+    the summed entry notional as the denominator shrank exactly the markets that
+    flipped most -- which were the ones that lost most. The mean of per-market
+    ratios came out +8.3% on a run whose dollar total was -$36,296, with an
+    annualised Sharpe of +38.8. A losing strategy read as a spectacular one.
+    """
+    # One market: $100 allotted, rolled through 4 entries, ended down $50.
+    rolled = _res("a", -50.0, stake_alloc=100.0, stake=400.0, notional=700.0, n=4)
+    m = trading_metrics([rolled])
+    assert m["total_pnl"] == pytest.approx(-50.0)
+    # -50 on the $100 that was actually at risk, not on a phantom $400.
+    assert m["avg_return"] == pytest.approx(-0.50)
+    assert m["pnl_per_1k_deployed"] == pytest.approx(-500.0)
+    # Turnover still measures churn against that same bankroll.
+    assert m["turnover"] == pytest.approx(7.0)
+
+
+def test_single_entry_policies_are_unaffected_by_the_allotment_column():
+    """Where the two denominators agree, the number must not move."""
+    with_alloc = trading_metrics([_res("a", -9.0, stake_alloc=100.0, stake=100.0)])
+    without = trading_metrics([_res("a", -9.0, stake=100.0)])
+    assert with_alloc["avg_return"] == pytest.approx(without["avg_return"])
+    assert with_alloc["pnl_per_1k_deployed"] == pytest.approx(without["pnl_per_1k_deployed"])
+
+
+def test_the_two_scoring_entry_points_agree_on_the_same_markets():
+    """The whole point of the shared module: one number, reached two ways."""
+    from sim.metrics import score_records
+
+    results = [_res("a", 12.0, fees=2.0), _res("b", -7.0, fees=2.0), _untraded("c")]
+    via_objects = trading_metrics(results)
+    via_frame = score_records(results_frame(results))
+    assert via_objects.keys() == via_frame.keys()
+    for k in via_objects:
+        a, b = via_objects[k], via_frame[k]
+        if isinstance(a, float) and np.isnan(a):
+            assert np.isnan(b), k
+        else:
+            assert a == pytest.approx(b), k
 
 
 # -- assembly ------------------------------------------------------------
