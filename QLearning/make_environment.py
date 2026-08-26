@@ -39,6 +39,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -90,25 +92,54 @@ class TradingEnv:
         self._i = 0 # which candle row are we in rn
         self.portfolio = Portfolio(config=self.config)
         self._entry_price = 0.0 # Up-equivalent price the open position was entered at
+        self._c = None # numpy views of the current episode, see _columns()
+        self._cols = {} # index -> those views, built once per episode
         # Seeded: which markets a training run visits is part of the run, and an
         # unseeded default_rng() here made the reported 30-run spread impossible
         # to reproduce.
         self._rng = np.random.default_rng(seed)
 
+    def _columns(self, index):
+        """Per-episode numpy views of the columns the step loop reads.
+
+        The loop used to do `self._ep.iloc[i]["price_up"]` several times per
+        step, and a full 30-seed sweep is ~25 million steps, so that indexing
+        was the entire runtime: 2 hours, almost none of it arithmetic. Extracted
+        once per episode and cached, since the episode frames never change.
+        """
+        cached = self._cols.get(index)
+        if cached is None:
+            ep = self.episodes[index]
+            get = lambda c: (
+                ep[c].to_numpy(dtype=float) if c in ep.columns
+                else np.full(len(ep), np.nan)
+            )
+            cached = {
+                "candle_index": ep["candle_index"].to_numpy(dtype=np.int64),
+                "price_up": get("price_up"),
+                "price_down": get("price_down"),
+                "next_open": get("next_open"),
+                "next_high": get("next_high"),
+                "next_low": get("next_low"),
+                "winner": str(ep["winner"].iloc[0]).strip().capitalize(),
+                "n": len(ep),
+            }
+            self._cols[index] = cached
+        return cached
+
     def _get_state(self):
-        row = self._ep.iloc[self._i]
+        c = self._c
+        i = self._i
         position = _SIDE_TO_BUCKET[self.portfolio.side]
 
         # time bucket safely bounded [0, 59]
-        time_bucket = max(0, min(int(row["candle_index"]), MAX_TIME_BUCKET))
+        time_bucket = max(0, min(int(c["candle_index"][i]), MAX_TIME_BUCKET))
 
         # current mark price of whichever leg (if any) we hold
-        if position == LONG_UP:
-            curr_price = row["price_up"]
-        elif position == LONG_DOWN:
-            curr_price = row["price_down"]
+        if position == LONG_DOWN:
+            curr_price = c["price_down"][i]
         else:
-            curr_price = row["price_up"]
+            curr_price = c["price_up"][i]
 
         # calculate the price bucket
         price_bucket = min(int(curr_price * N_PRICE_BUCKETS), N_PRICE_BUCKETS - 1)
@@ -149,17 +180,21 @@ class TradingEnv:
         if episode_index is None:
             index = self._rng.integers(0, len(self.episodes))
 
-        self._ep = self.episodes[index].reset_index(drop=True)
+        self._ep = self.episodes[index]
+        self._c = self._columns(index)
         self._i = 0
         self.portfolio = Portfolio(config=self.config)
         self._entry_price = 0.0
         return self._get_state()
 
     def step(self, action):
-        row = self._ep.iloc[self._i]
-        is_last_step = self._i == len(self._ep) - 1
+        c = self._c
+        i = self._i
+        is_last_step = i == c["n"] - 1
+        nxt_o = c["next_open"][i]
+        fill_candle = int(c["candle_index"][i]) + 1
 
-        value_before = self.portfolio.value(row["price_up"])
+        value_before = self.portfolio.value(c["price_up"][i])
         was_valid = True
         fee_before = self.portfolio.fees_paid
 
@@ -168,28 +203,26 @@ class TradingEnv:
         elif action == CLOSE:
             if self.portfolio.side is Side.FLAT:
                 was_valid = False
-            elif is_last_step or pd.isna(row.get("next_open")):
+            elif is_last_step or math.isnan(nxt_o):
                 was_valid = False  # no next candle to fill a close against
             else:
                 # stamped with the candle the trade FILLS on, not the one that
                 # signalled it -- same convention as backtest.py and
                 # sim.evaluation, so holding periods mean one thing repo-wide.
                 was_valid = self.portfolio.close(
-                    row["next_open"], row["next_high"], row["next_low"],
-                    int(row["candle_index"]) + 1,
+                    nxt_o, c["next_high"][i], c["next_low"][i], fill_candle,
                 )
                 if was_valid:
                     self._entry_price = 0.0
         elif action in (BUY_UP, BUY_DOWN):
             if self.portfolio.side is not Side.FLAT:
                 was_valid = False
-            elif is_last_step or pd.isna(row.get("next_open")):
+            elif is_last_step or math.isnan(nxt_o):
                 was_valid = False  # no next candle to fill an entry against
             else:
                 side = Side.UP if action == BUY_UP else Side.DOWN
                 was_valid = self.portfolio.buy(
-                    side, row["next_open"], row["next_high"], row["next_low"],
-                    int(row["candle_index"]) + 1,
+                    side, nxt_o, c["next_high"][i], c["next_low"][i], fill_candle,
                 )
                 if was_valid:
                     # the price actually paid, slippage included -- not the raw
@@ -205,14 +238,13 @@ class TradingEnv:
 
         # forced settlement at episode end -- no exit taker fee on resolution
         if is_last_step and self.portfolio.side is not Side.FLAT:
-            self.portfolio.settle(str(row["winner"]).strip().capitalize())
+            self.portfolio.settle(c["winner"])
             self._entry_price = 0.0
 
         if is_last_step:
             value_after = self.portfolio.cash  # settled: no open position left
         else:
-            next_row = self._ep.iloc[self._i + 1]
-            value_after = self.portfolio.value(next_row["price_up"])
+            value_after = self.portfolio.value(c["price_up"][i + 1])
 
         reward = value_after - value_before
 
