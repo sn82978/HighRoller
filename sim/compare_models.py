@@ -15,6 +15,7 @@ Models that haven't been run for --split yet just get skipped (with a printed no
 
 import argparse
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,38 @@ SOURCES = {
     "BaselineModels (xgb_baseline)": os.path.join(ROOT, "BaselineModels/output/markets.csv"),
     "QLearning": os.path.join(ROOT, "QLearning/output/markets.csv"),
 }
+
+
+SEED_SUFFIX = re.compile(r"^(?P<family>.+)_seed(?P<seed>\d+)$")
+
+
+def seed_family(strategy: str):
+    """'qlearning_seed07' -> 'qlearning'; None for a single-run strategy."""
+    m = SEED_SUFFIX.match(str(strategy))
+    return m.group("family") if m else None
+
+
+def score_seed_family(mk: pd.DataFrame, family: str) -> tuple[dict, dict]:
+    """Mean and sd of each metric ACROSS seeds -- not the metrics of a mean run.
+
+    The distinction matters. Averaging the 30 agents' per-market PnL first and
+    scoring that once would report the Sharpe of an ensemble, not of the policy:
+    averaging 30 independent runs cancels most of their variance, so the
+    denominator collapses and Sharpe inflates by roughly sqrt(30) for a policy
+    nobody could actually run. Scoring each seed and averaging the results
+    answers the question the report asks -- what does one run of this agent do,
+    and how much does that vary.
+    """
+    per_seed = [
+        score(mk[mk.strategy == s]) for s in sorted(mk.strategy.unique())
+    ]
+    keys = [k for k in per_seed[0] if isinstance(per_seed[0][k], (int, float))]
+    mean = {k: float(np.nanmean([r[k] for r in per_seed])) for k in keys}
+    sd = {k: float(np.nanstd([r[k] for r in per_seed], ddof=1)) for k in keys}
+    mean["strategy"] = f"{family} (mean of {len(per_seed)})"
+    mean["split"] = per_seed[0]["split"]
+    mean["n_seeds"] = len(per_seed)
+    return mean, sd
 
 
 def align_to_common_markets(all_mk: pd.DataFrame):
@@ -138,6 +171,11 @@ def main():
         help="score each model on its own market set instead of the shared "
         "intersection. Totals are then not comparable across models",
     )
+    ap.add_argument(
+        "--per-seed", action="store_true",
+        help="score every seed of a sweep as its own strategy instead of "
+        "collapsing them into one mean row",
+    )
     ap.add_argument("--figs-dir", default=FIGS_DIR)
     args = ap.parse_args()
 
@@ -154,6 +192,17 @@ def main():
             continue
         df = pd.read_csv(path)
         df = df[df.split == args.split]
+        # A market must appear once per strategy. Concurrent or repeated writers
+        # append rather than replace, and a duplicated market is counted twice
+        # by every total in the table -- silently, since nothing else notices.
+        dupes = df.duplicated(subset=["strategy", "event_slug"]).sum()
+        if dupes:
+            raise SystemExit(
+                f"{path} has {dupes:,} duplicate (strategy, market) rows for "
+                f"split={args.split!r}. That file was written by more than one "
+                "run. Regenerate it rather than scoring it -- every total here "
+                "would double-count."
+            )
         if df.empty:
             print(f"  [skip] {label}: markets.csv has no rows for split={args.split!r}")
             continue
@@ -184,7 +233,22 @@ def main():
             for s, n in sorted(dropped.items()):
                 print(f"  {s}: dropping {n} market(s) the others did not evaluate")
 
-    rows = [score(all_mk[all_mk.strategy == s]) for s in all_mk.strategy.unique()]
+    # A seeded sweep is one policy measured 30 times, not 30 policies.
+    families, singles = {}, []
+    for s in all_mk.strategy.unique():
+        fam = seed_family(s) if not args.per_seed else None
+        (families.setdefault(fam, []).append(s) if fam else singles.append(s))
+
+    rows, spreads = [], {}
+    for s in singles:
+        rows.append(score(all_mk[all_mk.strategy == s]))
+    for fam, members in families.items():
+        mean, sd = score_seed_family(all_mk[all_mk.strategy.isin(members)], fam)
+        rows.append(mean)
+        spreads[mean["strategy"]] = sd
+        print(f"\ncollapsed {len(members)} seeds of {fam!r} into one row "
+              f"(mean of per-seed scores; +/- is sd across seeds)")
+
     summary = pd.DataFrame(rows).set_index("strategy")
 
     print(f"\n{'=' * 100}\n  CROSS-MODEL COMPARISON  (split: {args.split})\n{'=' * 100}")

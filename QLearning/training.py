@@ -311,7 +311,37 @@ MODEL_FAMILY = "qlearning"
 
 def run_sweep(n_runs=DEFAULT_RUNS, num_episodes=DEFAULT_EPISODES,
               family=MODEL_FAMILY, config=None, fresh=True):
-    """Train `n_runs` agents, one per seed, and score each on train and val."""
+    """Train `n_runs` agents, one per seed, and score each on train and val.
+
+    Holds a lock for the duration. Two sweeps writing the same family append
+    into the same CSVs line by line, and one calling reset_outputs part-way
+    through the other truncates it mid-run: a real overlap here produced 56 rows
+    in a 30-run file and 188,708 duplicate market rows, with no error anywhere.
+    Nothing downstream would have caught it -- score() would happily have
+    averaged each market twice.
+    """
+    lock = os.path.join(OUT_DIR, f".{family}.sweep.lock")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit(
+            f"another sweep for family {family!r} is already running "
+            f"(lock: {lock}).\nIf that is stale -- no python process is training "
+            f"-- delete the file and retry."
+        )
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    try:
+        _run_sweep_locked(n_runs, num_episodes, family, config, fresh)
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
+def _run_sweep_locked(n_runs, num_episodes, family, config, fresh):
     if fresh:
         reset_outputs(family)
 
