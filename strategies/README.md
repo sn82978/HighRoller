@@ -26,17 +26,23 @@ comparable across models. Market universe comes from `sim.evaluation.load_univer
 (`--split {train,val,test}`, `dev` for train+val, or `all` for the whole tape). See
 `sim/compare_models.py` to put this side by side with the other models.
 
-> **The numbers in this file were computed over the held-out test split.**
-> `--split all` used to be the default here, and it built its universe by calling
-> `load_split("test", allow_test=True)` with the flag hardcoded, so the ordinary
-> invocation read all 1,332 test markets. Every figure in the tables below --- and
-> in the progress report's Tables 6 and 7, which come from them --- is therefore
-> computed over train + val + test, while the report states in two places that the
-> test split has never been read.
+> **These two strategies have seen the held-out test split, and the progress
+> report says they haven't.** `--split all` used to be the default here, and it
+> built its universe by calling `load_split("test", allow_test=True)` with the
+> flag hardcoded, so the ordinary invocation read all 1,332 test markets. The
+> progress report's Tables 6 and 7 come from that run, and the report states in
+> two places that the test split has never been read.
+>
+> Nothing was tuned on the result --- these are fixed rules with no fitted
+> parameters, and the 0.55 threshold predates the exposure --- but the split was
+> read, so the held-out numbers for `momentum_flip` and `buy_and_hold_down` are
+> not a genuine first look and are disclosed as such in
+> [HELD_OUT.md](../HELD_OUT.md). The other four policies are clean.
 >
 > `--split all` and `--split test` now refuse to run without an explicit
-> `--allow-test`, and the default is `val`. Use `dev` (train + val) to iterate.
-> The tables below are stale and are regenerated on `dev` before they are cited.
+> `--allow-test`, and the default is `val`. The tables below are regenerated on
+> val; the contaminated ones they replaced are described at the end of this
+> file so they stay identifiable if they turn up in a draft.
 
 Note: an older version of this script charged slippage but never charged Polymarket's
 7% taker fee, so if you've seen a `momentum_flip` number like `+$28,920` floating around,
@@ -64,68 +70,110 @@ resolution regardless of what happens. `--hold-side Up` for the other leg.
   markets; a flip closes the old leg and rolls the proceeds into the new one.
 - 53 of 8,608 markets are skipped for an incomplete or unresolved live window.
 
-## Results, `--split all`, zero slippage
+## Results
 
-**Stale and test-contaminated --- see the warning at the top.** This table covers
-train + val + test. It is kept here only so the contaminated figures are
-identifiable if they turn up in a draft; regenerate on `dev` before citing
-anything. The `max drawdown` signs are also from the old `sim.evaluation.score`,
-which reported drawdown as a negative number; it is a positive magnitude now.
+Validation (2026-01-30 → 2026-02-13, 1,332 markets), \$100 per entry, slippage
+0.25, taker fee `0.07·p·(1−p)`. Regenerate with the commands at the top;
+`sim/compare_models.py` puts these beside the forecaster and the RL agent.
 
 | | momentum_flip | buy_and_hold_down |
 |---|---|---|
-| markets traded | 8,548 (99.9%) | 8,555 (100%) |
-| total P&L on $855,500 staked | **−$54,317** | **−$28,250** |
-| avg return per market | −6.35% | −3.30% |
-| 95% CI (bootstrap) | [−8.15%, −4.59%] | [−5.44%, −1.34%] |
-| win rate | 58.5% | 50.1% |
-| profit factor | 0.82 | 0.94 |
-| Sharpe per market | −0.074 | −0.032 |
-| t-stat vs zero edge | −6.88 | −3.01 |
-| max drawdown | −$55,143 (551 stakes) | −$29,729 (297 stakes) |
+| markets traded | 1,331 | 1,332 |
+| total P&L | **−\$36,296** | **−\$4,861** |
+| P&L per \$1k at risk | −\$272.70 | −\$36.49 |
+| — of which gross | −\$155.84 | −\$2.57 |
+| — of which fees | \$116.86 | \$33.93 |
+| avg return per market | −27.25% | −3.65% |
+| 95% CI (bootstrap) | [−32.35%, −22.02%] | [−8.84%, +1.42%] |
+| win rate | 50.0% | 51.7% |
+| profit factor | 0.46 | 0.93 |
+| Sharpe (annualised) | −51.26 | −6.99 |
+| t-stat vs zero edge | −9.99 | −1.36 |
+| max drawdown | \$36,314 | \$8,608 |
+| turnover | 3.74× | 1.00× |
 
-Both lose money even at zero slippage once the 7% taker fee is charged on every
-non-settlement fill. `momentum_flip` has a noticeably higher win rate (58.5% vs 50.1%,
-so there is real signal in the tape) but trades often enough that fees eat past the edge.
+Both lose money, and both lose money **before** fees as well as after —
+`momentum_flip` gives up \$155.84 per \$1k on execution alone, then pays another
+\$116.86 in fees on top. Its 3.74× turnover is the whole story: it pays roughly
+four taker fees per market to earn a coin-flip win rate.
+
+`buy_and_hold_down` is the milder failure. Its gross edge is −\$2.57 per \$1k —
+statistically indistinguishable from zero (the CI spans it, t = −1.36) — and it
+is the \$33.93 fee that makes the loss. That is the clean version of this
+project's thesis, and it is the one policy here where it holds.
+
+On the held-out split neither improves and `buy_and_hold_down` gets much worse:
+
+| | momentum_flip | buy_and_hold_down |
+|---|---|---|
+| P&L per \$1k, val → test | −272.70 → −274.64 | −36.49 → −103.56 |
+| gross per \$1k, val → test | −155.84 → −156.46 | −2.57 → **−69.79** |
+
+`momentum_flip` barely moves because fee drag dominates it so completely that
+the market regime hardly registers — stability as a symptom, not a strength.
+`buy_and_hold_down`'s gross edge collapses, which is the same lesson the
+`buy_and_hold` (Up) leg teaches in `HELD_OUT.md`: the fortnight-level edge does
+not generalise.
 
 ## It only gets worse with slippage
 
 Slippage is `ExecutionConfig.slippage_frac`, a fraction of the candle's
 high-low range (median high-low on this book is 0.04), not a flat price-unit
-number:
+number. Validation, total P&L:
 
 | slippage_frac | momentum_flip | buy_and_hold_down |
 |---|---|---|
-| 0.00 | −$54,317 | −$28,250 |
-| 0.10 | −$117,741 | −$39,988 |
-| 0.25 | −$206,455 | −$56,718 |
-| 0.50 | −$335,974 | −$82,534 |
-| 1.00 | −$536,151 | −$127,799 |
+| 0.00 | −\$10,308 | −\$161 |
+| 0.10 | −\$21,008 | −\$2,097 |
+| **0.25** | **−\$36,296** | **−\$4,861** |
+| 0.50 | −\$57,592 | −\$9,135 |
+| 0.75 | −\$75,573 | −\$13,047 |
+| 1.00 | −\$88,503 | −\$16,648 |
 
-No slippage level makes either strategy profitable here -- the fee is the binding
-constraint, not execution quality.
+No slippage level makes either strategy profitable, including zero. At
+`slippage_frac 0.00` — a free fill at mid, which nobody gets —
+`buy_and_hold_down` still loses \$161 purely to the taker fee. The fee is the
+binding constraint; execution quality only decides how much worse it gets.
+
+Regenerate with `python strategies/sweep_slippage.py --split val`
+(`output/slippage_sweep.csv`).
+
+### The table this replaced
+
+Earlier revisions of this file reported `--split all` at zero slippage:
+`momentum_flip` −\$54,317 and `buy_and_hold_down` −\$28,250 over 8,548 markets,
+with `momentum_flip` at a 58.5% win rate. Those numbers covered train + val +
+**test**, for the reason in the warning at the top, and the progress report's
+Tables 6 and 7 come from them. They also predate two fixes: same-candle
+execution, and an average return divided by the sum of every entry's notional
+rather than by the one \$100 bankroll actually at risk — which reported
+`momentum_flip` at **+8.28%** average return on a run whose total was
+−\$36,296. Do not cite them.
 
 ## Output files
 
 | file | grain |
 |---|---|
 | `output/fills_<split>.csv` | every fill, flattened from `sim.execution.Portfolio.trades` |
-| `output/markets.csv` | one row per market per strategy, in `sim.evaluation.MARKET_RECORD_FIELDS` |
-| `output/summary.csv` | one column per strategy, every metric from `sim.evaluation.score` |
+| `output/markets.csv` | one row per market per strategy, in `sim.metrics.MARKET_RECORD_FIELDS`, plus the `slippage_frac` it was simulated under. Holds **every split scored so far** |
+| `output/summary.csv` | one column per strategy, every metric from `sim.metrics.score_records` |
 | `output/equity_curve.csv` | cumulative P&L and compounded equity per market |
-| `output/slippage_sweep.csv` | P&L vs assumed adverse fill |
+| `output/slippage_sweep.csv` | P&L vs assumed adverse fill, scored by `score_records` |
 
-Outputs are gitignored (`*.csv`) — regenerate with the commands above.
+`output/` is gitignored — these are intermediate per-market rows, and the
+scored results live in `comparison.csv` and `RESULTS.md` at the repo root.
+Regenerate with the commands at the top.
 
 ## Useful flags
 
 ```bash
---split {train,val,test,dev,all}  # market universe; 'dev' is train+val
---allow-test                    # required for 'test' or 'all'; one run, at the very end
---threshold 0.6                 # move the entry/flip trigger
---slippage 0.25                 # ExecutionConfig.slippage_frac (fraction of candle H-L range)
---days 30                       # last N days within the split, for a quick run
---hold-side Up                  # flip the buy-and-hold leg
+--split {train,val,test,dev,all}  # market universe; 'dev' is train+val. Default val
+--allow-test                     # required for 'test' or 'all'; one run, at the very end
+--threshold 0.6                  # move the entry/flip trigger (default 0.55)
+--slippage 0.25                  # ExecutionConfig.slippage_frac, fraction of candle H-L range.
+                                 # Default 0.25 -- keep it matched to the other tracks
+--days 30                        # last N days within the split, for a quick run
+--hold-side Up                   # flip the buy-and-hold leg
 ```
 
 `analyze_trades.py --fraction` sets the bankroll fraction for the compounded view.

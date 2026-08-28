@@ -19,11 +19,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import numpy as np
 import pandas as pd
 
 from sim.evaluation import LAST_INDEX, results_to_frame, simulate_market
 from sim.execution import ExecutionConfig
+from sim.metrics import score_records
 from generate_trades import OUT_DIR, load_candles, make_buy_and_hold, make_momentum_flip
 
 
@@ -74,19 +74,25 @@ def main():
     for s in args.slippages:
         mk = run(df, s, args.threshold, args.stake, args.hold_side, args.split)
         for name, g in mk.groupby("strategy"):
-            deployed = float(g.stake_deployed.sum())
-            traded = g[g.n_trades > 0]
+            # Delegated to the shared scorer rather than recomputed here. This
+            # block used to divide pnl by stake_deployed, which sums the
+            # notional of every entry -- so a momentum_flip market that flipped
+            # twelve times got a $1,200 denominator for the one $100 bankroll
+            # it actually had at risk, shrinking exactly the markets that lost
+            # most. It reported momentum_flip at +8.28% average return on a run
+            # whose total was -$36,296. sim.metrics divides by the allotment.
+            metrics = score_records(g)
             out.append(
                 dict(
                     slippage_frac=s,
                     strategy=name,
-                    total_pnl=g.pnl.sum(),
-                    avg_return_pct=float(np.mean(
-                        np.where(g.stake_deployed > 0,
-                                 g.pnl / g.stake_deployed.where(g.stake_deployed > 0, 1.0),
-                                 0.0))) * 100,
-                    win_rate_pct=(traded.pnl > 0).mean() * 100 if len(traded) else float("nan"),
-                    pnl_per_1k_deployed=g.pnl.sum() / deployed * 1000 if deployed else 0.0,
+                    total_pnl=metrics["total_pnl"],
+                    avg_return_pct=metrics["avg_return"] * 100,
+                    win_rate_pct=metrics["win_rate"] * 100,
+                    pnl_per_1k_deployed=metrics["pnl_per_1k_deployed"],
+                    gross_pnl_per_1k_deployed=metrics["gross_pnl_per_1k_deployed"],
+                    fee_per_1k_deployed=metrics["fee_per_1k_deployed"],
+                    sharpe=metrics["sharpe"],
                 )
             )
         print(f"  slippage_frac {s:<6} done")

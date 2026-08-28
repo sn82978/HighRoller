@@ -288,7 +288,8 @@ def main(argv=None) -> None:
       "policy are slightly different numbers for the same policy. Use "
       "`comparison.csv` for anything that puts these models next to the rule "
       "strategies or the RL agent; use this file for anything about the "
-      "forecaster on its own.")
+      "forecaster on its own. The held-out result is in `HELD_OUT.md`, and "
+      "`FIGURES.md` indexes every figure.")
     w()
 
     w("## Setup")

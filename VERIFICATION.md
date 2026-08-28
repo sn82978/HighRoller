@@ -7,6 +7,14 @@ this document; every verdict cites executing code or measured output.
 **Revision checked:** `origin/main` @ `6f65365` (local `HEAD` was 6 behind at the
 time of writing; all `QLearning/*` line numbers refer to `origin/main`).
 
+> **This document is a snapshot, and it has since been acted on.** Everything
+> below describes the code as it was at `6f65365` and is left unedited, because
+> it is the record the fixes were planned from and the report's claims are still
+> checked against it. Line numbers, file contents and measured numbers in the
+> body are therefore all *pre-fix*. See
+> [What was done about it](#what-was-done-about-it) for where each finding
+> stands now.
+
 **How the empirical numbers were produced.** The committed metrics CSVs do not
 record fills, entry prices, or time-in-position, so I reconstructed the 80/20
 split with the same seed and logic as `split_data.py`, trained one agent with
@@ -553,4 +561,68 @@ orphan runs have no figures — consistent with them being an aborted batch.
 | 11 | **88.5% of training at epsilon floor** | Tuning observation, not an error. |
 | 12 | **18 markets silently dropped** | Small sample cut, one line to disclose. |
 
-Nothing here was fixed. Diagnosis only, as requested.
+---
+
+## What was done about it
+
+The diagnosis above was the plan. This section records where each finding
+stands; the body of the document is deliberately not updated to match.
+
+### The ranked list
+
+| # | Problem | Status |
+|---|---|---|
+| 1 | Random-by-day split, not temporal | **Fixed** (`38d8f03`). `data_preparation.py` reads the canonical 70/15/15 temporal split through `sim.evaluation.load_split_candles`, the same universe every other track uses. `split_data.py` is marked SUPERSEDED and nothing imports it. |
+| 2 | "Holds to settlement" is false | **Measured and reported.** The corrected agent holds **2.39** candles on val and **2.76** on test, exiting early in 46% / 55% of the markets it trades. The report's 59.9 was episode length. See `HELD_OUT.md`. |
+| 3 | `avg_holding_period` and `turnover` are episode length | **Fixed** (`6bf7d09`). Both are computed in `sim/metrics.py` from trade events — `avg_holding_candles` from entry/exit candles, `turnover` from notional traded over capital. |
+| 4 | `fee_fraction_gross_pnl` discards all losses | **Fixed** (`6bf7d09`, `9456edd`). The `max(0, ...)` clamp is gone from the RL reward path and fee drag is computed once, on net gross PnL. It is NaN rather than 0.0 when gross ≤ 0 — see the caveat below. |
+| 5 | `pnl_per_1k_capital` is `total_pnl/1000` | **Fixed** (`6bf7d09`). Replaced by `pnl_per_1k_deployed`, normalised by the per-market allotment actually at risk. |
+| 6 | 70/20 CSV has 35 rows, reported as 30 | **Retired** (`7a3743d`). Both "configurations" were filename prefixes over a split that no longer exists. Replaced by 30 seeded runs on the canonical split; the old CSVs are in `QLearning/metrics/archive_pre_refactor/` with a README. |
+| 7 | Figure paths do not exist; 0.7T figures unreproducible | **Fixed** (`7c6cf54`). Both sets archived with provenance READMEs; `FIGURES.md` indexes every current figure and the command that rebuilds it. |
+| 8 | Same-candle execution | **Fixed** (`eb3cc84`). A signal on candle *c* fills on candle *c+1*'s open, repo-wide, and trades are stamped with the fill candle. |
+| 9 | Effectively no test set in 80/20 | **Resolved** (`38d8f03`, `65ac748`). The configs are gone; the canonical split has a real 1,332-market test block, scored exactly once. |
+| 10 | No RNG seeding; split not portable | **Fixed** (`7a3743d`). Agent and environment take a seed; the sweep is 30 seeded runs and reproduces to the last decimal across re-runs. |
+| 11 | 88.5% of training at the epsilon floor | **Not fixed — not a defect.** The schedule still finishes in roughly the first 12% of a run. Worth a sentence in limitations. |
+| 12 | 18 markets silently dropped | **Fixed** (`7a3743d`). An empty episode list now raises instead of printing; every track prints its sample cut. |
+
+### The CONTRADICTED verdicts
+
+13 (temporal split), 17 (fills), 19 and 20 (holding period, turnover), 21 (fee
+denominator), 22 (capital normalisation), 26 (holds to settlement) and 27
+(figure paths) are all addressed above.
+
+**15 needs correcting, not closing.** It reads CONFIRMED — "test split never
+read" — and that was true of the Q-learning track. It was not true of the rule
+strategies: `generate_trades.py` defaulted to `--split all` and reached the test
+block through a hardcoded `allow_test=True`, so the ordinary invocation read all
+1,332 test markets. That is disclosed in `HELD_OUT.md` and at the top of
+`strategies/README.md`.
+
+### Things this audit did not catch
+
+Found later, by running the tracks end to end rather than by reading them:
+
+- **The tracks were not running the same cost model.** `generate_trades.py`
+  defaulted `--slippage 0.0` while every other track defaulted `0.25`, and while
+  its own help text said 0.25. Worth 196 per \$1k on `momentum_flip`, and a sign
+  flip on its gross edge. Now stamped per market row and checked (`ec75bb2`).
+- **The tracks overwrote each other's `markets.csv`.** Scoring a second split
+  deleted the first, and a track with no rows reads as a skip, not an error.
+- **Theta was selected on the split being reported**, which would have made the
+  held-out number the best of eleven thresholds tried on held-out data.
+- **`xgb_baseline_strategies.py` wrote to the committed driver's output file**,
+  so running the exploratory script replaced what `RESULTS.md` is scored from.
+- **A mean of ratios is not a ratio.** The collapsed sweep row reported
+  `profit_factor` 9.85 on test, against a median of 0.457 with 23 of 30 seeds
+  losing money (`65ac748`).
+
+### Caveats that survive every fix
+
+- **`fee_fraction_gross_pnl` is undefined more often than not.** It is NaN
+  wherever gross PnL ≤ 0 — 25 of 30 seeds on val, 22 of 30 on test. Any mean of
+  it describes the profitable minority. Do not quote it as the sweep's fee drag.
+- **The Q-learning agent does not converge.** Across 30 seeds on val, `n_traded`
+  ranges 0 to 598 and the sd exceeds the mean on every headline metric. One run
+  of this agent tells you almost nothing; the report's own §3.3 predicted this.
+- **The rule strategies' prior test exposure cannot be undone.** It is disclosed
+  rather than repaired.

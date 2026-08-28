@@ -338,3 +338,30 @@ def test_rewriting_a_split_replaces_rather_than_doubles(tmp_path):
     out = pd.read_csv(path)
     assert len(out) == 2
     assert not out.duplicated(subset=["strategy", "event_slug"]).any()
+
+
+def test_average_return_cannot_disagree_in_sign_with_total_pnl():
+    """A losing run cannot have a positive average return.
+
+    This is the invariant the stake_deployed denominator broke, and it broke it
+    twice -- once in score_records, and again in strategies/sweep_slippage.py,
+    which had hand-rolled its own copy of the arithmetic instead of calling the
+    shared scorer. The second copy reported momentum_flip at +8.28% average
+    return on a validation run whose total was -$36,296, because dividing by the
+    sum of twelve re-entries shrinks exactly the markets that lost most.
+    """
+    from sim.metrics import score_records
+
+    # A big loser that re-entered 12 times, and a small winner that entered
+    # once. Dividing by stake_deployed gives -100/1200 = -0.083 and +50/100 =
+    # +0.50, whose mean is +0.21 -- a positive average return on a run that lost
+    # $50. Dividing by the $100 actually at risk in each gives -1.00 and +0.50.
+    rows = _mk_rows("flip", "val", ["a", "b"])
+    rows.loc[0, ["pnl", "stake_deployed", "n_trades"]] = [-100.0, 1200.0, 12]
+    rows.loc[1, ["pnl", "stake_deployed", "n_trades"]] = [50.0, 100.0, 1]
+
+    s = score_records(rows)
+    assert s["total_pnl"] < 0
+    assert s["avg_return"] < 0, (
+        f"total_pnl {s['total_pnl']} but avg_return {s['avg_return']}"
+    )
