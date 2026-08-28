@@ -87,12 +87,25 @@ def score_seed_family(mk: pd.DataFrame, family: str) -> tuple[dict, dict]:
     keys = [k for k in per_seed[0] if isinstance(per_seed[0][k], (int, float))]
 
     def across(fn):
-        return {k: float(fn([r[k] for r in per_seed])) for k in keys}
+        # A metric can be NaN for every seed -- fee_fraction_gross_pnl is
+        # undefined wherever gross PnL is <= 0, and on a bad sweep that is
+        # all 30 runs. numpy's nan-aware reducers answer NaN but emit a
+        # RuntimeWarning doing it, which lands in the middle of the run's
+        # output looking like a failure. The answer is still NaN; say so
+        # without the noise.
+        def one(k):
+            vals = np.asarray([r[k] for r in per_seed], dtype=float)
+            return float(fn(vals)) if np.isfinite(vals).any() else float("nan")
+
+        return {k: one(k) for k in keys}
 
     mean = across(np.nanmean)
     stats = {
         "mean": mean,
-        "sd": across(lambda v: np.nanstd(v, ddof=1)),
+        # ddof=1 needs two finite values; one seed has no spread, not a
+        # spread of zero, and numpy warns rather than saying so.
+        "sd": across(lambda v: np.nanstd(v, ddof=1) if np.isfinite(v).sum() > 1
+                     else float("nan")),
         "median": across(np.nanmedian),
         "min": across(np.nanmin),
         "max": across(np.nanmax),
