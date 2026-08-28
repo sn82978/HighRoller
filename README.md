@@ -42,7 +42,7 @@ was no edge left to sink, so the claim has to be the weaker and more robust one:
 | `BaselineModels/` | XGBoost forecaster plus the no-trade and buy-and-hold floors. `run_baselines.py` regenerates `RESULTS.md`. |
 | `strategies/` | two hand-written rules, `momentum_flip` and `buy_and_hold_down`. See [strategies/README.md](strategies/README.md). |
 | `QLearning/` | tabular Q-learning over `(price, time, position, pnl)` — 9,000 states, 4 actions. |
-| `tests/` | 184 tests. `python -m pytest tests -q`. |
+| `tests/` | 185 tests. `python -m pytest tests -q`. |
 
 Every track scores through `sim/metrics.py` and prices fills through
 `sim/execution.py`, so the comparison is arithmetic rather than translation.
