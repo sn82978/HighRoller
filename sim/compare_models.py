@@ -62,6 +62,14 @@ def seed_family(strategy: str):
     return m.group("family") if m else None
 
 
+#: Metrics that are ratios of sums. A mean of these across seeds is a mean of
+#: ratios, which is not a ratio, and is unbounded when a seed happens to have
+#: almost no losing markets: on test, three of the thirty seeds scored
+#: profit_factor 207, 54 and 13, pulling the mean to 9.85 while the median was
+#: 0.47. Reported with a median so the mean cannot be quoted on its own.
+RATIO_METRICS = ("profit_factor", "fee_fraction_gross_pnl")
+
+
 def score_seed_family(mk: pd.DataFrame, family: str) -> tuple[dict, dict]:
     """Mean and sd of each metric ACROSS seeds -- not the metrics of a mean run.
 
@@ -77,12 +85,22 @@ def score_seed_family(mk: pd.DataFrame, family: str) -> tuple[dict, dict]:
         score(mk[mk.strategy == s]) for s in sorted(mk.strategy.unique())
     ]
     keys = [k for k in per_seed[0] if isinstance(per_seed[0][k], (int, float))]
-    mean = {k: float(np.nanmean([r[k] for r in per_seed])) for k in keys}
-    sd = {k: float(np.nanstd([r[k] for r in per_seed], ddof=1)) for k in keys}
+
+    def across(fn):
+        return {k: float(fn([r[k] for r in per_seed])) for k in keys}
+
+    mean = across(np.nanmean)
+    stats = {
+        "mean": mean,
+        "sd": across(lambda v: np.nanstd(v, ddof=1)),
+        "median": across(np.nanmedian),
+        "min": across(np.nanmin),
+        "max": across(np.nanmax),
+    }
     mean["strategy"] = f"{family} (mean of {len(per_seed)})"
     mean["split"] = per_seed[0]["split"]
     mean["n_seeds"] = len(per_seed)
-    return mean, sd
+    return mean, stats
 
 
 def check_one_cost_model(all_mk: pd.DataFrame) -> float | None:
@@ -199,8 +217,9 @@ def plot_headline_bars(
         lo = np.full(len(strategies), np.nan)
         hi = np.full(len(strategies), np.nan)
         for i, s in enumerate(strategies):
-            if s in spreads and np.isfinite(spreads[s].get(col, np.nan)):
-                lo[i] = hi[i] = spreads[s][col]
+            sd = spreads.get(s, {}).get("sd", {}).get(col, np.nan)
+            if np.isfinite(sd):
+                lo[i] = hi[i] = sd
             elif col == "avg_return":
                 lo[i] = abs(summary.at[s, "avg_return"] - summary.at[s, "return_ci95_lo"])
                 hi[i] = abs(summary.at[s, "return_ci95_hi"] - summary.at[s, "avg_return"])
@@ -368,11 +387,23 @@ def main():
     for s in singles:
         rows.append(score(all_mk[all_mk.strategy == s]))
     for fam, members in families.items():
-        mean, sd = score_seed_family(all_mk[all_mk.strategy.isin(members)], fam)
+        mean, stats = score_seed_family(all_mk[all_mk.strategy.isin(members)], fam)
         rows.append(mean)
-        spreads[mean["strategy"]] = sd
+        spreads[mean["strategy"]] = stats
         print(f"\ncollapsed {len(members)} seeds of {fam!r} into one row "
               f"(mean of per-seed scores; +/- is sd across seeds)")
+        for metric in RATIO_METRICS:
+            mu, med = stats["mean"].get(metric), stats["median"].get(metric)
+            if mu is None or not np.isfinite(mu) or not np.isfinite(med):
+                continue
+            if abs(mu - med) > max(1.0, 2 * abs(med)):
+                print(
+                    f"  [warn] {fam}.{metric}: mean {mu:,.2f} but median "
+                    f"{med:,.2f} (range {stats['min'][metric]:,.2f} to "
+                    f"{stats['max'][metric]:,.2f}). This is a ratio of sums, so "
+                    f"the mean across seeds is dominated by a few runs with "
+                    f"almost no losing markets. Quote the median, or the range."
+                )
 
     summary = pd.DataFrame(rows).set_index("strategy")
 
@@ -400,14 +431,19 @@ def main():
     summary.to_csv(args.out)
     print(f"\nwrote {args.out}")
 
-    # A collapsed sweep row is a mean with no spread attached, and a mean of 30
-    # runs whose n_traded ranges over 0..598 is close to meaningless on its own.
-    # The sd was already computed to print it; write it too, so "-60.5 +/- 80.3"
-    # can be cited from a file rather than from a scrollback buffer.
+    # A collapsed sweep row is a mean with no spread attached, and a mean of
+    # 30 runs whose n_traded ranges over 0..598 is close to meaningless on its
+    # own. Worse for the ratio metrics: on test the mean profit_factor is 9.85
+    # because three seeds scored 207, 54 and 13, while the median is 0.47. So
+    # the whole across-seed distribution is written out, not just the sd.
     if spreads:
         spread_path = re.sub(r"\.csv$", "", args.out) + "_spread.csv"
-        pd.DataFrame(spreads).T.rename_axis("strategy").to_csv(spread_path)
-        print(f"wrote {spread_path}  (sd across seeds, same columns)")
+        tidy = pd.concat(
+            {strat: pd.DataFrame(stats).T for strat, stats in spreads.items()},
+            names=["strategy", "statistic"],
+        )
+        tidy.to_csv(spread_path)
+        print(f"wrote {spread_path}  (mean/sd/median/min/max across seeds)")
 
     if not args.no_plots:
         bars_path = plot_headline_bars(summary, args.split, args.figs_dir, spreads)

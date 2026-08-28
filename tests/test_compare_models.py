@@ -122,3 +122,27 @@ def test_missing_cost_column_warns_instead_of_passing_silently(capsys):
 
     assert check_one_cost_model(_rows("rule", ["a", "b"])) is None
     assert "[warn]" in capsys.readouterr().out
+
+
+# -- a mean of ratios is not a ratio -------------------------------------
+def test_seed_family_reports_the_whole_distribution_not_just_a_mean():
+    """profit_factor is unbounded, so its mean across seeds is not a summary.
+
+    On the real test split three of the thirty seeds happened to have almost no
+    losing markets and scored 207, 54 and 13. The mean came out at 9.85 -- which
+    reads as a wildly profitable agent -- while the median was 0.47 and 23 of 30
+    seeds lost money. Anything that reports the mean has to report the median
+    beside it.
+    """
+    from sim.compare_models import RATIO_METRICS, score_seed_family
+
+    mk = pd.concat(
+        [_rows(f"fam_seed{i:02d}", ["a", "b"], pnl=1.0) for i in range(4)]
+        + [_rows("fam_seed04", ["a", "b"], pnl=-1.0)],
+        ignore_index=True,
+    )
+    mean, stats = score_seed_family(mk, "fam")
+    assert set(stats) == {"mean", "sd", "median", "min", "max"}
+    assert stats["min"]["total_pnl"] <= stats["median"]["total_pnl"] <= stats["max"]["total_pnl"]
+    assert "profit_factor" in RATIO_METRICS
+    assert mean["strategy"] == "fam (mean of 5)"
