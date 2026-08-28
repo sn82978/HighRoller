@@ -296,3 +296,45 @@ def test_comparison_table_stacks_policies():
     tbl = comparison_table({"x": a, "y": b})
     assert list(tbl.policy) == ["x", "y"]
     assert tbl.loc[tbl.policy == "y", "total_pnl"].iloc[0] == pytest.approx(2.0)
+
+
+# -- markets.csv is shared across splits ---------------------------------
+def _mk_rows(strategy, split, slugs):
+    return pd.DataFrame([
+        {"strategy": strategy, "event_slug": s, "start_ts": 100 + i, "split": split,
+         "stake": 100.0, "pnl": 1.0, "fees": 0.5, "stake_deployed": 100.0,
+         "notional_traded": 100.0, "n_trades": 1, "n_fills": 1,
+         "entry_candle": 1, "exit_candle": 60, "early_exit": False, "winner": "Up"}
+        for i, s in enumerate(slugs)
+    ])
+
+
+def test_writing_one_split_keeps_the_others(tmp_path):
+    """Scoring test must not delete the val rows.
+
+    The tracks used to overwrite markets.csv wholesale, so `--split test`
+    destroyed every val row and the next `compare_models.py --split val` saw a
+    track with no rows -- which it reports as a skip, not an error.
+    """
+    from sim.metrics import write_markets
+
+    path = str(tmp_path / "markets.csv")
+    write_markets(path, _mk_rows("buy_and_hold", "val", ["a", "b"]), "val")
+    kept = write_markets(path, _mk_rows("buy_and_hold", "test", ["c"]), "test")
+
+    out = pd.read_csv(path)
+    assert kept == 2
+    assert dict(out.groupby("split").size()) == {"val": 2, "test": 1}
+
+
+def test_rewriting_a_split_replaces_rather_than_doubles(tmp_path):
+    """Re-running a split is idempotent, so no market is scored twice."""
+    from sim.metrics import write_markets
+
+    path = str(tmp_path / "markets.csv")
+    write_markets(path, _mk_rows("buy_and_hold", "val", ["a", "b"]), "val")
+    write_markets(path, _mk_rows("buy_and_hold", "val", ["a", "b"]), "val")
+
+    out = pd.read_csv(path)
+    assert len(out) == 2
+    assert not out.duplicated(subset=["strategy", "event_slug"]).any()

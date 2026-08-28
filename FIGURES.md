@@ -26,8 +26,33 @@ python sim/compare_models.py --split val             # -> comparison_figs/, comp
 takes a lockfile, so a second concurrent invocation refuses rather than
 interleaving its appends into the same CSV.
 
-Add `--split test --allow-test` to score the held-out split. Every script
-refuses `test` without the explicit flag.
+**Every track must run at the same `--slippage`.** They all default to `0.25`
+now, and `compare_models.py` refuses to build a table whose rows disagree — each
+market row records the cost model it was simulated under. This is not
+hypothetical: `generate_trades.py` used to default `0.0` while everything else
+defaulted `0.25`, so running each track's own documented command produced a
+table that silently priced the rule strategies differently from the models
+beside them. It moved `momentum_flip` from −77 to −273 per \$1k and flipped the
+sign of its gross edge.
+
+### Scoring the held-out split
+
+Every entry point refuses `test` unless `--allow-test` is spelled out.
+
+```bash
+python strategies/generate_trades.py --split test --allow-test
+python BaselineModels/run_baselines.py --split test --allow-test
+python QLearning/evaluate_split.py --split test --allow-test
+python sim/compare_models.py --split test --allow-test
+```
+
+The Q-learning step is `evaluate_split.py`, **not** `training.py`. It replays
+the 30 already-trained Q-tables from `QLearning/models/` greedily over the test
+markets. Retraining would produce 30 different agents, and the val→test
+comparison would then be two unrelated runs rather than a generalisation gap.
+
+`markets.csv` keeps every split it has been given, so scoring test does not
+destroy the val rows and re-scoring one split replaces rather than doubles it.
 
 ---
 

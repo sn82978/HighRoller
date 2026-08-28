@@ -133,3 +133,42 @@ def test_an_uninformative_model_scores_like_a_coin_flip(split):
     tbl = compare_to_market(va, np.full(len(va), 0.5)).set_index("forecaster")
     assert tbl.loc["model", "log_loss"] == pytest.approx(np.log(2))
     assert tbl.loc["model", "log_loss"] == pytest.approx(tbl.loc["always_0.5", "log_loss"])
+
+
+# -- theta selection must never see the reported split -------------------
+def test_theta_is_selected_on_val_only():
+    """Only validation may choose the threshold.
+
+    On --split test the driver used to read theta off the test sweep, which
+    turns the held-out number into "the best of eleven thresholds tried on the
+    held-out data". Train is excluded for the same reason in reverse: a
+    threshold picked on the data the model was fitted to is not a threshold.
+    """
+    from BaselineModels.run_baselines import SELECTION_SPLIT, selects_on_eval_split
+
+    assert selects_on_eval_split("val")
+    assert not selects_on_eval_split("test")
+    assert not selects_on_eval_split("train")
+    assert SELECTION_SPLIT == "val"
+
+
+def test_a_theta_chosen_on_test_would_have_been_a_different_theta():
+    """The guard above is not decorative -- the two sweeps disagree.
+
+    Built so that val's best eligible theta (0.02) is not test's (0.05). If
+    selection ran on the reported split, the reported theta would change.
+    """
+    from BaselineModels.xgb_baseline import best_theta
+
+    val_sweep = pd.DataFrame({
+        "theta": [0.01, 0.02, 0.05],
+        "n_traded": [900, 400, 120],
+        "pnl_per_1k_deployed": [-30.0, -5.0, -12.0],
+    })
+    test_sweep = pd.DataFrame({
+        "theta": [0.01, 0.02, 0.05],
+        "n_traded": [880, 380, 110],
+        "pnl_per_1k_deployed": [-28.0, -19.0, +4.0],
+    })
+    assert best_theta(val_sweep) == 0.02
+    assert best_theta(test_sweep) == 0.05

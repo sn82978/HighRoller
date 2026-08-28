@@ -60,10 +60,26 @@ from BaselineModels.xgb_baseline import (
     sweep_theta,
 )
 from sim.execution import ExecutionConfig
+from sim.metrics import write_markets
 
 OUT_DIR = os.path.join(ROOT, "BaselineModels/output")
 FIGS_DIR = os.path.join(ROOT, "figs")
 REPORT = os.path.join(ROOT, "RESULTS.md")
+
+#: The one split a hyperparameter may be selected on.
+SELECTION_SPLIT = "val"
+
+
+def selects_on_eval_split(split: str) -> bool:
+    """May theta be read off the sweep of the split we are reporting?
+
+    Only when that split is validation. Everywhere else -- train, and above all
+    test -- the threshold has to come from a separate val sweep, or the
+    "held-out" number is the maximum over eleven thresholds tried on the
+    held-out data. Broken out of main() so this stays a testable claim rather
+    than one branch inside a 200-line driver.
+    """
+    return split == SELECTION_SPLIT
 
 
 def git_sha() -> str:
@@ -183,10 +199,24 @@ def main(argv=None) -> None:
 
     # -- policies --------------------------------------------------------
     print("sweeping theta...")
+    # Theta is a hyperparameter, so it is chosen on validation and then frozen.
+    # This used to select it from the evaluation split's own sweep, which is
+    # fine while that split IS val and silently ruinous on --split test: the
+    # threshold would be picked by looking at the held-out data, and the number
+    # reported as held-out would be the best of eleven thresholds tried on it.
+    # sweep_theta's own docstring says "run this on validation"; now it does.
     sweep = sweep_theta(evalset, p_hat, config=config)
+    if selects_on_eval_split(args.split):
+        selection_sweep = sweep
+    else:
+        print("  selecting theta on val (never on the reported split)...")
+        selection_sweep = sweep_theta(fit_val, model.predict(fit_val), config=config)
     try:
-        theta = best_theta(sweep)
-        theta_note = f"{theta} (>= {MIN_TRADES_FOR_SELECTION} trades required)"
+        theta = best_theta(selection_sweep)
+        theta_note = (
+            f"{theta} (>= {MIN_TRADES_FOR_SELECTION} trades required; "
+            f"selected on val)"
+        )
     except ValueError as exc:
         theta, theta_note = None, f"none selected: {exc}"
 
@@ -211,8 +241,10 @@ def main(argv=None) -> None:
     ]
     os.makedirs(args.out_dir, exist_ok=True)
     mk_path = os.path.join(args.out_dir, "markets.csv")
-    pd.concat(frames, ignore_index=True).to_csv(mk_path, index=False)
-    print(f"  wrote {mk_path}")
+    kept = write_markets(mk_path, pd.concat(frames, ignore_index=True), args.split,
+                         slippage_frac=config.slippage_frac)
+    print(f"  wrote {mk_path}"
+          + (f"  (kept {kept:,} rows from other splits)" if kept else ""))
 
     fig_path = calibration_figure(y, p_hat, args.split)
     print(f"  wrote {fig_path}")
@@ -371,16 +403,28 @@ def main(argv=None) -> None:
     cols = ["theta", "n_traded", "trade_rate", "total_pnl", "pnl_per_1k_deployed",
             "gross_pnl_per_1k_deployed", "fee_per_1k_deployed", "win_rate", "sharpe",
             "avg_holding_candles"]
+    if args.split != "val":
+        w(f"This sweep is **diagnostic only** — theta was selected on val and "
+          f"frozen before {args.split} was scored. Nothing here chose anything; "
+          f"reading a better theta off this table and reporting it would make "
+          f"the {args.split} number a tuned one.")
+        w()
     w("```")
     w(_fmt(sweep[cols].round(4)))
     w("```")
     w()
     w(f"- minimum trades required: **{MIN_TRADES_FOR_SELECTION}**")
     w(f"- selected theta: **{theta_note}**")
-    eligible = sweep[sweep.n_traded >= MIN_TRADES_FOR_SELECTION]
-    w(f"- eligible: {eligible.theta.tolist()}")
+    eligible = selection_sweep[selection_sweep.n_traded >= MIN_TRADES_FOR_SELECTION]
+    w(f"- eligible (on the val selection sweep): {eligible.theta.tolist()}")
     w(f"- excluded (too few trades): "
-      f"{sweep[sweep.n_traded < MIN_TRADES_FOR_SELECTION].theta.tolist()}")
+      f"{selection_sweep[selection_sweep.n_traded < MIN_TRADES_FOR_SELECTION].theta.tolist()}")
+    if args.split != "val":
+        w()
+        w("Val selection sweep, for the record:")
+        w("```")
+        w(_fmt(selection_sweep[cols].round(4)))
+        w("```")
     w()
     if len(eligible) > 1:
         monotone = eligible.pnl_per_1k_deployed.is_monotonic_decreasing

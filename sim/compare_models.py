@@ -6,9 +6,19 @@ scores with sim.evaluation.score(), writes comparison.csv and (unless
 --no-plots) a set of PNGs under comparison_figs/.
 
     python strategies/generate_trades.py --split val
-    python BaselineModels/xgb_baseline.py --split val
+    python BaselineModels/run_baselines.py --split val
     python QLearning/training.py            # writes QLearning/output/markets.csv too
     python sim/compare_models.py --split val
+
+For the held-out split, swap the RL step for a replay of the trained tables --
+retraining would produce different agents, and the val/test pair would stop
+being a generalisation gap:
+
+    python QLearning/evaluate_split.py --split test --allow-test
+
+Every track must have run at the same --slippage; each market row records the
+cost model it was simulated under and this script refuses to table rows that
+disagree.
 
 Models that haven't been run for --split yet just get skipped (with a printed note).
 """
@@ -31,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from sim.evaluation import market_slugs, score
+from sim.metrics import COST_MODEL_FIELD
 
 FIGS_DIR = os.path.join(ROOT, "comparison_figs")
 
@@ -72,6 +83,53 @@ def score_seed_family(mk: pd.DataFrame, family: str) -> tuple[dict, dict]:
     mean["split"] = per_seed[0]["split"]
     mean["n_seeds"] = len(per_seed)
     return mean, sd
+
+
+def check_one_cost_model(all_mk: pd.DataFrame) -> float | None:
+    """Refuse to table strategies that were simulated under different costs.
+
+    "Identical markets under identical fees" is the comparison's whole claim,
+    and until each row carried the cost model it was simulated under, nothing
+    checked it -- the tracks simply had to be launched with matching flags.
+    They were not: generate_trades.py defaulted --slippage 0.0 while every
+    other track defaulted 0.25, so running each track's documented command
+    priced the rule strategies' fills differently from the models they were
+    tabled against. It moved momentum_flip from -77 to -273 per $1k and flipped
+    the sign of its gross edge, and the table gave no sign of it.
+
+    Returns the shared slippage_frac, or None when the column is absent.
+    """
+    if COST_MODEL_FIELD not in all_mk.columns:
+        print(
+            f"\n  [warn] no {COST_MODEL_FIELD!r} column -- these markets.csv files "
+            "predate cost-model stamping, so nothing here can verify the tracks "
+            "ran under the same costs. Regenerate them."
+        )
+        return None
+
+    by_strategy = all_mk.groupby("strategy")[COST_MODEL_FIELD].agg(["min", "max"])
+    if by_strategy.isna().any().any():
+        missing = by_strategy[by_strategy.isna().any(axis=1)].index.tolist()
+        raise SystemExit(
+            f"no {COST_MODEL_FIELD} recorded for: {missing}. Regenerate those "
+            "tracks -- an unlabelled cost model cannot be compared."
+        )
+    if not np.isclose(by_strategy["min"], by_strategy["max"]).all():
+        raise SystemExit(
+            f"a strategy has rows at more than one {COST_MODEL_FIELD}:\n"
+            f"{by_strategy.to_string()}\nRegenerate that track."
+        )
+
+    values = sorted(by_strategy["min"].round(10).unique())
+    if len(values) > 1:
+        raise SystemExit(
+            f"the tracks were simulated under different cost models "
+            f"({COST_MODEL_FIELD} = {values}):\n{by_strategy['min'].to_string()}\n"
+            "Re-run them all at the same --slippage before comparing. This table "
+            "claims identical fees; at different slippage it would not have them."
+        )
+    print(f"  cost model: {COST_MODEL_FIELD}={values[0]} across every strategy")
+    return float(values[0])
 
 
 def align_to_common_markets(all_mk: pd.DataFrame):
@@ -290,6 +348,8 @@ def main():
         raise SystemExit("nothing to compare -- run at least one model's script first")
 
     all_mk = pd.concat(frames, ignore_index=True)
+
+    check_one_cost_model(all_mk)
 
     if not args.no_align:
         all_mk, common, dropped = align_to_common_markets(all_mk)

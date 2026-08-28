@@ -48,6 +48,8 @@ what a fee accumulator that was never wired up looks like, so it stays NaN.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -80,6 +82,46 @@ MARKET_RECORD_FIELDS: tuple[str, ...] = (
     "early_exit",
     "winner",
 )
+
+
+#: Column stamping the cost model each row was simulated under. Not part of
+#: MARKET_RECORD_FIELDS -- it describes the run, not the market -- but written
+#: alongside so "identical costs" is checkable from the artefacts instead of
+#: being a convention held in someone's head.
+COST_MODEL_FIELD = "slippage_frac"
+
+
+def write_markets(
+    path: str, frame: pd.DataFrame, split: str, *, slippage_frac: float | None = None
+) -> int:
+    """Write one split's rows into a track's markets.csv, keeping the others.
+
+    The tracks used to overwrite this file wholesale. That is invisible while
+    everything runs on val, and destructive the moment a second split is
+    scored: `run_baselines.py --split test` deleted every val row, and the next
+    `compare_models.py --split val` then had nothing to read for that track --
+    silently, since a track with no rows for a split is a `[skip]`, not an
+    error.
+
+    Replacing only the rows whose `split` matches keeps every split already
+    scored and makes re-running one split idempotent rather than doubling it.
+    Returns the number of rows kept from the previous file.
+    """
+    if slippage_frac is not None:
+        frame = frame.copy()
+        frame[COST_MODEL_FIELD] = float(slippage_frac)
+
+    kept = 0
+    if os.path.exists(path):
+        old = pd.read_csv(path)
+        if "split" in old.columns:
+            old = old[old.split != split]
+            kept = len(old)
+            if kept:
+                frame = pd.concat([old, frame], ignore_index=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    frame.to_csv(path, index=False)
+    return kept
 
 
 def _capital_basis(mk: pd.DataFrame) -> np.ndarray:

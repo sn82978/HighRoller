@@ -68,6 +68,11 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
                 ),
                 early_exit=bool(closes),
                 winner=str(last.winner),
+                # Stamps the cost model this row was simulated under, so
+                # compare_models.py can verify that "identical fees" actually
+                # held rather than trusting that every track was launched with
+                # the same flag. See sim.metrics.COST_MODEL_FIELD.
+                slippage_frac=env.config.slippage_frac,
             )
         )
         all_ep_actions.append(ep_actions)

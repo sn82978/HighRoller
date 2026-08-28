@@ -155,6 +155,12 @@ def report(s, mk, fraction):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in-dir", default=DEFAULT_IN)
+    ap.add_argument(
+        "--split", default=None,
+        help="which split to score. Optional while markets.csv holds only one; "
+        "required once it holds more, since scoring them together would average "
+        "the held-out split into the tuning one",
+    )
     ap.add_argument("--top", type=int, default=10, help="best/worst markets to list")
     ap.add_argument(
         "--fraction",
@@ -168,6 +174,21 @@ def main():
     if not os.path.exists(mk_path):
         raise SystemExit(f"missing {mk_path} — run generate_trades.py first")
     markets = pd.read_csv(mk_path)
+
+    # markets.csv keeps every split that has been scored, so this file is no
+    # longer single-split the way it was when the header below just printed
+    # split.iloc[0].
+    present = sorted(markets.split.unique())
+    if args.split is not None:
+        if args.split not in present:
+            raise SystemExit(f"no rows for split {args.split!r}; file has {present}")
+        markets = markets[markets.split == args.split]
+    elif len(present) > 1:
+        raise SystemExit(
+            f"{mk_path} holds several splits ({present}). Pass --split to pick "
+            "one -- scoring them together would mix the held-out split into the "
+            "tuning one."
+        )
 
     print(
         f"\n{markets.event_slug.nunique():,} markets · "

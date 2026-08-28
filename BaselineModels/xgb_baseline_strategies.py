@@ -30,8 +30,15 @@ from BaselineModels.data_loader import load_split
 from BaselineModels.features import build_features, feature_columns
 from sim.evaluation import results_to_frame, score, simulate_market
 from sim.execution import BUY_DOWN, BUY_UP, ExecutionConfig, HOLD, Side
+from sim.metrics import write_markets
 
-OUT_DIR = os.path.join(ROOT, "BaselineModels/output")
+# Its own directory. This used to be BaselineModels/output -- the same
+# markets.csv run_baselines.py writes, which is the file RESULTS.md is scored
+# from and one of compare_models.py's three SOURCES. Running this exploratory
+# script therefore replaced the committed driver's output with a different set
+# of strategies at a different slippage, and the next comparison scored that
+# instead, silently.
+OUT_DIR = os.path.join(ROOT, "BaselineModels/output/xgb_strategies")
 
 
 def build_split_features(split: str, *, allow_test: bool = False) -> pd.DataFrame:
@@ -120,7 +127,8 @@ def main():
     ap.add_argument("--allow-test", action="store_true", help="required to evaluate on --split test")
     ap.add_argument("--threshold", type=float, default=0.55, help="entry/flip confidence, matches momentum_flip's default")
     ap.add_argument("--stake", type=float, default=100.0)
-    ap.add_argument("--slippage", type=float, default=0.0, help="ExecutionConfig.slippage_frac")
+    ap.add_argument("--slippage", type=float, default=0.25,
+                    help="ExecutionConfig.slippage_frac; project default is 0.25")
     ap.add_argument("--tune", action="store_true", help="sweep thresholds on val instead of a single backtest")
     ap.add_argument("--out-dir", default=OUT_DIR)
     args = ap.parse_args()
@@ -159,8 +167,8 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     mk_path = os.path.join(args.out_dir, "markets.csv")
-    mk.to_csv(mk_path, index=False)
-    fills.to_csv(os.path.join(args.out_dir, "fills.csv"), index=False)
+    write_markets(mk_path, mk, args.split, slippage_frac=config.slippage_frac)
+    fills.to_csv(os.path.join(args.out_dir, f"fills_{args.split}.csv"), index=False)
     print(f"{len(mk):>7,} rows -> {mk_path}")
 
     s = score(mk)

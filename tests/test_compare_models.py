@@ -67,3 +67,58 @@ def test_alignment_changes_the_reported_total():
     unaligned = score_records(mk[mk.strategy == "baseline"])["total_pnl"]
     aligned, _, _ = align_to_common_markets(mk)
     assert score_records(aligned[aligned.strategy == "baseline"])["total_pnl"] < unaligned
+
+
+# -- identical fees, checked rather than assumed -------------------------
+def _cost_rows(strategy, slugs, slippage):
+    df = _rows(strategy, slugs)
+    df["slippage_frac"] = slippage
+    return df
+
+
+def test_comparing_across_cost_models_is_refused():
+    """The claim is 'identical markets under identical fees'. Check the fees.
+
+    generate_trades.py defaulted --slippage 0.0 while every other track
+    defaulted 0.25, so running each track's own documented command produced a
+    table whose rows were priced differently -- worth 196 per $1k on
+    momentum_flip, and a sign flip on its gross edge. Nothing detected it,
+    because the cost model was not recorded anywhere in the outputs.
+    """
+    from sim.compare_models import check_one_cost_model
+
+    mk = pd.concat([
+        _cost_rows("rule", ["a", "b"], 0.0),
+        _cost_rows("baseline", ["a", "b"], 0.25),
+    ], ignore_index=True)
+    with pytest.raises(SystemExit, match="different cost models"):
+        check_one_cost_model(mk)
+
+
+def test_one_shared_cost_model_passes_and_is_returned():
+    from sim.compare_models import check_one_cost_model
+
+    mk = pd.concat([
+        _cost_rows("rule", ["a", "b"], 0.25),
+        _cost_rows("baseline", ["a", "b"], 0.25),
+    ], ignore_index=True)
+    assert check_one_cost_model(mk) == 0.25
+
+
+def test_a_track_with_two_cost_models_in_one_file_is_refused():
+    """A half-regenerated markets.csv is worse than a stale one."""
+    from sim.compare_models import check_one_cost_model
+
+    mk = pd.concat([
+        _cost_rows("rule", ["a"], 0.0),
+        _cost_rows("rule", ["b"], 0.25),
+    ], ignore_index=True)
+    with pytest.raises(SystemExit, match="more than one"):
+        check_one_cost_model(mk)
+
+
+def test_missing_cost_column_warns_instead_of_passing_silently(capsys):
+    from sim.compare_models import check_one_cost_model
+
+    assert check_one_cost_model(_rows("rule", ["a", "b"])) is None
+    assert "[warn]" in capsys.readouterr().out

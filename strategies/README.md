@@ -3,10 +3,22 @@
 Two hand-written strategies to benchmark the learned agents against.
 
 ```bash
-python strategies/generate_trades.py --split dev   # writes fills / markets CSVs
-python strategies/analyze_trades.py                # scores them, prints the metrics
-python strategies/sweep_slippage.py --split dev    # re-runs both across fill assumptions
+python strategies/generate_trades.py --split val     # writes fills / markets CSVs
+python strategies/analyze_trades.py --split val      # scores them, prints the metrics
+python strategies/sweep_slippage.py --split val      # re-runs both across fill assumptions
 ```
+
+`--slippage` defaults to **0.25**, matching every other track. It used to default
+to `0.0` here while this file's own help text said 0.25, so the documented
+command priced these fills differently from the models these strategies are
+tabled against --- worth 196 per \$1k on `momentum_flip`, and a sign flip on its
+gross edge. `sim/compare_models.py` now refuses to build a table whose tracks
+disagree on the cost model; each market row records the slippage it was
+simulated under.
+
+`markets.csv` keeps every split it has been given, so scoring one does not erase
+another --- which is why `analyze_trades.py` now needs `--split` to say which one
+to score.
 
 Fills/fees/slippage go through `sim.execution.Portfolio` via `sim.evaluation.simulate_market`
 -- same engine as `BaselineModels/xgb_baseline.py` and `QLearning/`, so P&L numbers are
@@ -97,7 +109,7 @@ constraint, not execution quality.
 
 | file | grain |
 |---|---|
-| `output/fills.csv` | every fill, flattened from `sim.execution.Portfolio.trades` |
+| `output/fills_<split>.csv` | every fill, flattened from `sim.execution.Portfolio.trades` |
 | `output/markets.csv` | one row per market per strategy, in `sim.evaluation.MARKET_RECORD_FIELDS` |
 | `output/summary.csv` | one column per strategy, every metric from `sim.evaluation.score` |
 | `output/equity_curve.csv` | cumulative P&L and compounded equity per market |

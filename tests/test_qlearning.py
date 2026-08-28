@@ -175,3 +175,41 @@ def test_gross_pnl_is_not_clamped_to_positive():
 def test_empty_episode_list_raises_instead_of_printing():
     with pytest.raises(ValueError, match="no episodes"):
         TradingEnv(episodes=[], config=FRICTIONLESS)
+
+
+# -- the held-out split has to be asked for out loud ---------------------
+def test_evaluate_split_refuses_test_without_the_flag():
+    """One scored pass, and it has to be requested explicitly.
+
+    evaluate_split.py exists so the test split can be scored without
+    retraining. That makes it the easiest place in the repo to spend the
+    held-out budget by accident.
+    """
+    import evaluate_split
+
+    with pytest.raises(SystemExit, match="allow-test"):
+        evaluate_split.main(["--split", "test"])
+
+
+def test_evaluate_split_refuses_to_rescore_a_split_it_already_scored(tmp_path, monkeypatch):
+    """Appending a second pass would double every market in the table.
+
+    Silently: score() would average each market twice and nothing downstream
+    checks. This is the same corruption two concurrent training sweeps caused
+    before run_sweep took a lock.
+    """
+    import evaluate_split
+
+    models = tmp_path / "models"
+    models.mkdir()
+    np.save(models / "qlearning_seed00.npy", np.zeros((10, 60, 3, 5, 4)))
+    metrics = tmp_path / "metrics"
+    metrics.mkdir()
+    (metrics / "qlearning_val.csv").write_text("already scored\n")
+
+    monkeypatch.setattr(evaluate_split, "MODELS_DIR", str(models))
+    monkeypatch.setattr(evaluate_split, "metrics_path",
+                        lambda fam, split: str(metrics / f"{fam}_{split}.csv"))
+
+    with pytest.raises(SystemExit, match="already exists"):
+        evaluate_split.main(["--split", "val"])

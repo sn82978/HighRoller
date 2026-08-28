@@ -47,6 +47,7 @@ from sim.evaluation import (
     simulate_market,
 )
 from sim.execution import BUY_DOWN, BUY_UP, ExecutionConfig, HOLD, Side
+from sim.metrics import write_markets
 
 OUT_DIR = os.path.join(ROOT, "strategies/output")
 
@@ -125,7 +126,14 @@ def main():
     ap.add_argument(
         "--slippage",
         type=float,
-        default=0.0,
+        default=0.25,
+        # Was 0.0, while this very help string said the project default is 0.25
+        # and every other track defaulted to 0.25. Running the documented
+        # command therefore priced this track's fills differently from the
+        # models it is tabled against -- and not by a rounding margin:
+        # momentum_flip reads -77/1k at 0.0 against -273/1k at 0.25, and its
+        # gross edge flips sign, +48/1k to -156/1k. The comparison's whole
+        # claim is "identical markets under identical costs".
         help="adverse fill as a fraction of the candle's high-low range "
         "(sim.execution.ExecutionConfig.slippage_frac; project default is 0.25)",
     )
@@ -176,10 +184,11 @@ def main():
     mk = results_to_frame(results)
     os.makedirs(args.out_dir, exist_ok=True)
     mk_path = os.path.join(args.out_dir, "markets.csv")
-    mk.to_csv(mk_path, index=False)
-    fills_path = os.path.join(args.out_dir, "fills.csv")
+    kept = write_markets(mk_path, mk, args.split, slippage_frac=config.slippage_frac)
+    fills_path = os.path.join(args.out_dir, f"fills_{args.split}.csv")
     pd.DataFrame(fills).to_csv(fills_path, index=False)
-    print(f"{len(mk):>7,} rows -> {mk_path}")
+    print(f"{len(mk):>7,} rows -> {mk_path}"
+          + (f"  (kept {kept:,} rows from other splits)" if kept else ""))
     print(f"{len(fills):>7,} rows -> {fills_path}")
 
     n_markets = df.event_slug.nunique() - skipped
