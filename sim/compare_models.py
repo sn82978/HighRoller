@@ -96,8 +96,29 @@ def align_to_common_markets(all_mk: pd.DataFrame):
     return all_mk[all_mk.event_slug.isin(common)], common, dropped
 
 
-def plot_headline_bars(summary: pd.DataFrame, split: str, figs_dir: str) -> str:
-    """One PNG, one bar-chart panel per headline metric, all strategies side by side."""
+def _bar_label(v: float) -> str:
+    """Enough decimals to distinguish the bar from zero.
+
+    A fixed '%.1f' printed '-0.0' for four of the six avg_return bars, which
+    reads as "no effect" for numbers spanning a factor of 40.
+    """
+    if not np.isfinite(v):
+        return "n/a"
+    if v == 0:
+        return "0"
+    return f"{v:,.1f}" if abs(v) >= 1 else f"{v:,.4f}".rstrip("0")
+
+
+def plot_headline_bars(
+    summary: pd.DataFrame, split: str, figs_dir: str, spreads: dict | None = None
+) -> str:
+    """One PNG, one bar-chart panel per headline metric, all strategies side by side.
+
+    A collapsed sweep row gets an error bar of +/- one sd across its seeds. It
+    is a mean of 30 runs whose sd exceeds the mean on most of these metrics, and
+    drawn as a bare bar it claims a precision the sweep does not have.
+    """
+    spreads = spreads or {}
     metrics = [
         ("total_pnl", "Total P&L ($)"),
         ("avg_return", "Avg return / market"),
@@ -113,24 +134,39 @@ def plot_headline_bars(summary: pd.DataFrame, split: str, figs_dir: str) -> str:
     for ax, (col, title) in zip(axes.flat, metrics):
         values = summary[col].to_numpy(dtype=float)
         bars = ax.bar(strategies, values, color=colors)
-        if col == "avg_return":
-            lo = (summary["avg_return"] - summary["return_ci95_lo"]).to_numpy(dtype=float)
-            hi = (summary["return_ci95_hi"] - summary["avg_return"]).to_numpy(dtype=float)
+
+        # Bootstrap CI on the single-run rows; across-seed sd on the sweep rows.
+        # NaN where neither applies -- matplotlib skips those points, whereas a
+        # zero draws a flat cap across the bar top that reads as a tiny whisker.
+        lo = np.full(len(strategies), np.nan)
+        hi = np.full(len(strategies), np.nan)
+        for i, s in enumerate(strategies):
+            if s in spreads and np.isfinite(spreads[s].get(col, np.nan)):
+                lo[i] = hi[i] = spreads[s][col]
+            elif col == "avg_return":
+                lo[i] = abs(summary.at[s, "avg_return"] - summary.at[s, "return_ci95_lo"])
+                hi[i] = abs(summary.at[s, "return_ci95_hi"] - summary.at[s, "avg_return"])
+        if np.isfinite(lo).any() or np.isfinite(hi).any():
             ax.errorbar(
-                strategies, values, yerr=[np.abs(lo), np.abs(hi)],
+                strategies, values, yerr=[lo, hi],
                 fmt="none", ecolor="black", capsize=4,
             )
+
         ax.axhline(0, color="black", linewidth=0.8)
         ax.set_title(title, fontsize=11)
         ax.tick_params(axis="x", rotation=30, labelsize=8)
         for bar, v in zip(bars, values):
             ax.annotate(
-                f"{v:,.1f}", (bar.get_x() + bar.get_width() / 2, v),
-                textcoords="offset points", xytext=(0, 3 if v >= 0 else -12),
+                _bar_label(v), (bar.get_x() + bar.get_width() / 2, v if np.isfinite(v) else 0),
+                textcoords="offset points", xytext=(0, 3 if not (v < 0) else -12),
                 ha="center", fontsize=7,
             )
 
-    fig.suptitle(f"Cross-model comparison — split: {split}", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        f"Cross-model comparison — split: {split}\n"
+        "whiskers: bootstrap 95% CI on avg return; ± 1 sd across seeds on a collapsed sweep",
+        fontsize=13, fontweight="bold",
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     os.makedirs(figs_dir, exist_ok=True)
     path = os.path.join(figs_dir, f"headline_bars_{split}.png")
@@ -139,19 +175,48 @@ def plot_headline_bars(summary: pd.DataFrame, split: str, figs_dir: str) -> str:
     return path
 
 
-def plot_equity_curves(all_mk: pd.DataFrame, split: str, figs_dir: str) -> str:
-    """Cumulative P&L over time, one line per strategy, all on the same $100 stake."""
-    fig, ax = plt.subplots(figsize=(11, 6))
-    for strat in all_mk.strategy.unique():
-        sub = all_mk[all_mk.strategy == strat].sort_values("start_ts")
-        cum_pnl = np.cumsum(sub.pnl.to_numpy())
-        ax.plot(range(len(cum_pnl)), cum_pnl, label=strat, linewidth=1.5)
+def plot_equity_curves(
+    all_mk: pd.DataFrame, split: str, figs_dir: str, per_seed: bool = False
+) -> str:
+    """Cumulative P&L over time, one line per strategy, all on the same $100 stake.
 
-    ax.axhline(0, color="black", linewidth=0.8)
+    A seeded sweep is drawn as a band -- every seed faint, the mean bold -- not
+    as one labelled line each. With 30 seeds the plain version put 35 entries in
+    the legend, which ran off the bottom of the canvas and recycled the colour
+    cycle three times, so the seeds were indistinguishable from each other *and*
+    from the five policies the figure exists to compare.
+    """
+    fig, ax = plt.subplots(figsize=(11, 6))
+
+    singles, families = [], {}
+    for s in all_mk.strategy.unique():
+        fam = seed_family(s) if not per_seed else None
+        (families.setdefault(fam, []).append(s) if fam else singles.append(s))
+
+    def curve(strategy: str) -> np.ndarray:
+        sub = all_mk[all_mk.strategy == strategy].sort_values("start_ts")
+        return np.cumsum(sub.pnl.to_numpy(dtype=float))
+
+    for strat in singles:
+        cum_pnl = curve(strat)
+        ax.plot(range(len(cum_pnl)), cum_pnl, label=strat, linewidth=1.6, zorder=2)
+
+    for fam, members in families.items():
+        curves = [curve(s) for s in sorted(members)]
+        n = min(len(c) for c in curves)
+        stack = np.array([c[:n] for c in curves])
+        for one in stack:
+            ax.plot(range(n), one, color="0.55", linewidth=0.5, alpha=0.35, zorder=1)
+        ax.plot(
+            range(n), stack.mean(axis=0), color="black", linewidth=2.0, zorder=3,
+            label=f"{fam} — mean of {len(members)} seeds (each in grey)",
+        )
+
+    ax.axhline(0, color="black", linewidth=0.8, zorder=0)
     ax.set_xlabel("Markets, in chronological order")
     ax.set_ylabel("Cumulative P&L ($)")
     ax.set_title(f"Cumulative P&L by market order — split: {split}", fontsize=12)
-    ax.legend()
+    ax.legend(loc="lower left", fontsize=9)
     fig.tight_layout()
     os.makedirs(figs_dir, exist_ok=True)
     path = os.path.join(figs_dir, f"equity_curves_{split}.png")
@@ -275,9 +340,18 @@ def main():
     summary.to_csv(args.out)
     print(f"\nwrote {args.out}")
 
+    # A collapsed sweep row is a mean with no spread attached, and a mean of 30
+    # runs whose n_traded ranges over 0..598 is close to meaningless on its own.
+    # The sd was already computed to print it; write it too, so "-60.5 +/- 80.3"
+    # can be cited from a file rather than from a scrollback buffer.
+    if spreads:
+        spread_path = re.sub(r"\.csv$", "", args.out) + "_spread.csv"
+        pd.DataFrame(spreads).T.rename_axis("strategy").to_csv(spread_path)
+        print(f"wrote {spread_path}  (sd across seeds, same columns)")
+
     if not args.no_plots:
-        bars_path = plot_headline_bars(summary, args.split, args.figs_dir)
-        curves_path = plot_equity_curves(all_mk, args.split, args.figs_dir)
+        bars_path = plot_headline_bars(summary, args.split, args.figs_dir, spreads)
+        curves_path = plot_equity_curves(all_mk, args.split, args.figs_dir, args.per_seed)
         print(f"wrote {bars_path}")
         print(f"wrote {curves_path}")
 

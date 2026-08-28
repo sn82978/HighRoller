@@ -248,6 +248,16 @@ def main(argv=None) -> None:
       f"`{config.slippage_frac}` of the fill candle's high-low range, "
       f"${config.stake_dollars:g} per entry.")
     w()
+    # The two documents disagree on purpose, and a reader who spots it without
+    # this note will assume one of them is wrong.
+    w("**Scope: this file scores the baselines on every market this track "
+      "covers.** `comparison.csv` scores the same policies on the smaller set "
+      "*every* track covers, so its totals for `buy_and_hold` and the XGBoost "
+      "policy are slightly different numbers for the same policy. Use "
+      "`comparison.csv` for anything that puts these models next to the rule "
+      "strategies or the RL agent; use this file for anything about the "
+      "forecaster on its own.")
+    w()
 
     w("## Setup")
     w()
@@ -350,7 +360,10 @@ def main(argv=None) -> None:
     w(_fmt(cal))
     w("```")
     w()
-    w(f"Figure: `{os.path.relpath(fig_path, ROOT)}`")
+    # Forward slashes: this string is read on Linux and macOS as often as here,
+    # and os.path.relpath hands back backslashes on Windows.
+    w(f"Figure: `{os.path.relpath(fig_path, ROOT).replace(os.sep, '/')}` "
+      f"(see FIGURES.md for the full index)")
     w()
 
     w(f"## Threshold sweep ({args.split}, after fees and slippage)")
