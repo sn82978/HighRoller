@@ -1,12 +1,12 @@
 """Tests for the Q-learning track.
 
-This track had no test coverage at all, which is how a hardcoded
-allow_test=True, an unseeded RNG and a blind append all survived in it at once.
+This track had zero tests, which is how a hardcoded allow_test=True, an unseeded
+RNG and a blind append all managed to survive in it at the same time.
 
-The reproducibility tests here are the load-bearing ones: the report averages 30
-independent runs, and until these passed, "independent run" meant "draw from the
-unseeded global np.random", so no reported spread could be reproduced -- not on
-another machine, and not on the same one twice.
+The reproducibility tests are the important ones here. The report averages 30
+"independent runs", but until these passed, independent just meant "drawn from
+the unseeded global np.random", so none of the reported spread could be
+reproduced -- not on another machine, and not twice on the same one.
 """
 
 import os
@@ -75,7 +75,7 @@ def test_different_seeds_diverge():
 
 
 def test_env_episode_sampling_is_seeded():
-    """Which markets a run visits is part of the run."""
+    """Which markets a run happens to visit is part of that run."""
     def visited(seed):
         env = TradingEnv(episodes=_episodes(8), config=FRICTIONLESS, seed=seed)
         return [env.reset() and env._ep.event_slug.iloc[0] for _ in range(20)]
@@ -85,7 +85,7 @@ def test_env_episode_sampling_is_seeded():
 
 
 def test_agent_does_not_touch_global_numpy_random():
-    """Seeding is worthless if a second agent perturbs the global stream."""
+    """Seeding does nothing if some other agent is messing with the global stream."""
     np.random.seed(1234)
     before = np.random.rand()
     np.random.seed(1234)
@@ -118,7 +118,7 @@ def test_agent_never_selects_a_masked_action():
 
 # -- execution -------------------------------------------------------------
 def test_entry_price_is_the_filled_price_not_the_unslipped_mid():
-    """The pnl_bucket the agent observes must reflect the spread it just paid.
+    """The pnl_bucket the agent sees has to include the spread it just paid.
 
     Recording next_open here told the agent it was flat on a position it had
     just paid slippage to open, so the neutral PnL bucket absorbed trades that
@@ -156,7 +156,7 @@ def test_settlement_is_free_and_forced_at_the_last_candle():
 
 
 def test_gross_pnl_is_not_clamped_to_positive():
-    """The clamp discarded losing steps while keeping their fees.
+    """The old clamp threw away losing steps but kept their fees.
 
     That is the 21.5x fee-drag discrepancy the progress report flags in 3.3.
     """
@@ -179,11 +179,11 @@ def test_empty_episode_list_raises_instead_of_printing():
 
 # -- the held-out split has to be asked for out loud ---------------------
 def test_evaluate_split_refuses_test_without_the_flag():
-    """One scored pass, and it has to be requested explicitly.
+    """You only get one scored pass, so you have to ask for it on purpose.
 
-    evaluate_split.py exists so the test split can be scored without
-    retraining. That makes it the easiest place in the repo to spend the
-    held-out budget by accident.
+    evaluate_split.py exists so you can score the test split without retraining,
+    which also makes it the easiest place in the repo to accidentally burn the
+    one held-out run we get.
     """
     import evaluate_split
 
@@ -192,11 +192,11 @@ def test_evaluate_split_refuses_test_without_the_flag():
 
 
 def test_evaluate_split_refuses_to_rescore_a_split_it_already_scored(tmp_path, monkeypatch):
-    """Appending a second pass would double every market in the table.
+    """A second pass would append and double every market in the table.
 
-    Silently: score() would average each market twice and nothing downstream
-    checks. This is the same corruption two concurrent training sweeps caused
-    before run_sweep took a lock.
+    And it'd do it silently -- score() would just average each market twice and
+    nothing downstream checks for that. Same thing two concurrent training
+    sweeps did before run_sweep started taking a lock.
     """
     import evaluate_split
 

@@ -32,12 +32,11 @@ from sim.evaluation import results_to_frame, score, simulate_market
 from sim.execution import BUY_DOWN, BUY_UP, ExecutionConfig, HOLD, Side
 from sim.metrics import write_markets
 
-# Its own directory. This used to be BaselineModels/output -- the same
-# markets.csv run_baselines.py writes, which is the file RESULTS.md is scored
-# from and one of compare_models.py's three SOURCES. Running this exploratory
-# script therefore replaced the committed driver's output with a different set
-# of strategies at a different slippage, and the next comparison scored that
-# instead, silently.
+# Gets its own directory now. This used to point at BaselineModels/output, the
+# same markets.csv run_baselines.py writes -- which is what RESULTS.md is scored
+# from and one of compare_models.py's three SOURCES. So running this scratch
+# script overwrote the real driver's output with a different set of strategies
+# at a different slippage, and the next comparison quietly scored that instead.
 OUT_DIR = os.path.join(ROOT, "BaselineModels/output/xgb_strategies")
 
 

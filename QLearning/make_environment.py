@@ -81,9 +81,9 @@ class TradingEnv:
     def __init__(self, episodes, config: ExecutionConfig | None = None, seed=None):
         if not episodes:
             raise ValueError(
-                "TradingEnv got no episodes. This used to print 'no episodes' and "
-                "carry on, so the next reset() died on an empty-range integers() "
-                "call somewhere unrelated."
+                "TradingEnv got no episodes. This used to just print 'no episodes' "
+                "and keep going, and then reset() blew up later on an empty-range "
+                "integers() call that had nothing to do with the real problem."
             )
 
         self.episodes = episodes
@@ -94,18 +94,19 @@ class TradingEnv:
         self._entry_price = 0.0 # Up-equivalent price the open position was entered at
         self._c = None # numpy views of the current episode, see _columns()
         self._cols = {} # index -> those views, built once per episode
-        # Seeded: which markets a training run visits is part of the run, and an
-        # unseeded default_rng() here made the reported 30-run spread impossible
-        # to reproduce.
+        # Seeded on purpose. Which markets a run visits is part of the run, and
+        # leaving default_rng() unseeded meant nobody could reproduce the 30-run
+        # spread we were reporting.
         self._rng = np.random.default_rng(seed)
 
     def _columns(self, index):
-        """Per-episode numpy views of the columns the step loop reads.
+        """Grab the columns the step loop needs as numpy arrays, once per episode.
 
-        The loop used to do `self._ep.iloc[i]["price_up"]` several times per
-        step, and a full 30-seed sweep is ~25 million steps, so that indexing
-        was the entire runtime: 2 hours, almost none of it arithmetic. Extracted
-        once per episode and cached, since the episode frames never change.
+        The loop used to call self._ep.iloc[i]["price_up"] several times every
+        single step. A full 30-seed sweep is around 25 million steps, so that
+        pandas indexing was basically the entire runtime -- 2 hours, almost none
+        of it actual math. The episode frames never change, so we pull the
+        columns out once and cache them.
         """
         cached = self._cols.get(index)
         if cached is None:
@@ -206,9 +207,9 @@ class TradingEnv:
             elif is_last_step or math.isnan(nxt_o):
                 was_valid = False  # no next candle to fill a close against
             else:
-                # stamped with the candle the trade FILLS on, not the one that
-                # signalled it -- same convention as backtest.py and
-                # sim.evaluation, so holding periods mean one thing repo-wide.
+                # Stamped with the candle the trade FILLS on, not the one that
+                # triggered it. Same as backtest.py and sim.evaluation, so
+                # holding periods mean the same thing everywhere.
                 was_valid = self.portfolio.close(
                     nxt_o, c["next_high"][i], c["next_low"][i], fill_candle,
                 )
@@ -225,10 +226,10 @@ class TradingEnv:
                     side, nxt_o, c["next_high"][i], c["next_low"][i], fill_candle,
                 )
                 if was_valid:
-                    # the price actually paid, slippage included -- not the raw
-                    # next_open. The pnl_bucket the agent observes is measured
-                    # against this, so using the un-slipped mid would tell it it
-                    # was up on a position it had just paid the spread to open.
+                    # The price we actually paid, slippage and all -- not the
+                    # raw next_open. The agent's pnl_bucket is measured against
+                    # this, so using the un-slipped mid would tell it it was
+                    # already up on a position it just paid the spread to open.
                     entry = self.portfolio.trades[-1]
                     self._entry_price = entry.price
         else:
@@ -254,12 +255,12 @@ class TradingEnv:
             _SIDE_TO_BUCKET[self.portfolio.side],
             reward,
             fee=fee,
-            # Unclamped. This used to be max(0.0, reward + fee), which dropped
-            # every losing step from the gross-PnL total while keeping its fees,
-            # so the fee-drag ratio built on it read 6.9% where the honest
-            # figure was 147.3% -- a factor of 21.5 on identical trades, and
-            # flattering exactly when the policy was doing worst. Fee drag is
-            # now computed once, in sim.metrics, off net gross PnL.
+            # No clamp here. This used to be max(0.0, reward + fee), which
+            # threw away every losing step from the gross-PnL total but kept
+            # their fees. The fee-drag ratio built on that read 6.9% when the
+            # honest number was 147.3% -- 21.5x off on the exact same trades,
+            # and flattering right when the policy was doing worst. Fee drag is
+            # computed once now, in sim.metrics, off net gross PnL.
             gross_pnl=reward + fee,
         )
         done = is_last_step

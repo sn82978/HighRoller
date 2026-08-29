@@ -260,7 +260,7 @@ def test_return_denominator_is_the_allotment_not_the_sum_of_entries():
 
 
 def test_single_entry_policies_are_unaffected_by_the_allotment_column():
-    """Where the two denominators agree, the number must not move."""
+    """When both denominators agree, the answer shouldn't change."""
     with_alloc = trading_metrics([_res("a", -9.0, stake_alloc=100.0, stake=100.0)])
     without = trading_metrics([_res("a", -9.0, stake=100.0)])
     assert with_alloc["avg_return"] == pytest.approx(without["avg_return"])
@@ -310,11 +310,11 @@ def _mk_rows(strategy, split, slugs):
 
 
 def test_writing_one_split_keeps_the_others(tmp_path):
-    """Scoring test must not delete the val rows.
+    """Scoring test shouldn't wipe out the val rows.
 
-    The tracks used to overwrite markets.csv wholesale, so `--split test`
-    destroyed every val row and the next `compare_models.py --split val` saw a
-    track with no rows -- which it reports as a skip, not an error.
+    The tracks used to overwrite markets.csv completely, so --split test deleted
+    every val row, and then compare_models.py --split val saw a track with no
+    rows at all. It prints that as a skip, not an error, so you'd never notice.
     """
     from sim.metrics import write_markets
 
@@ -328,7 +328,7 @@ def test_writing_one_split_keeps_the_others(tmp_path):
 
 
 def test_rewriting_a_split_replaces_rather_than_doubles(tmp_path):
-    """Re-running a split is idempotent, so no market is scored twice."""
+    """Re-running the same split replaces it, so nothing gets scored twice."""
     from sim.metrics import write_markets
 
     path = str(tmp_path / "markets.csv")
@@ -341,14 +341,14 @@ def test_rewriting_a_split_replaces_rather_than_doubles(tmp_path):
 
 
 def test_average_return_cannot_disagree_in_sign_with_total_pnl():
-    """A losing run cannot have a positive average return.
+    """A run that lost money can't have a positive average return.
 
-    This is the invariant the stake_deployed denominator broke, and it broke it
-    twice -- once in score_records, and again in strategies/sweep_slippage.py,
-    which had hand-rolled its own copy of the arithmetic instead of calling the
-    shared scorer. The second copy reported momentum_flip at +8.28% average
-    return on a validation run whose total was -$36,296, because dividing by the
-    sum of twelve re-entries shrinks exactly the markets that lost most.
+    This is what the stake_deployed denominator broke, and it broke it twice --
+    once in score_records, then again in strategies/sweep_slippage.py, which had
+    copy-pasted its own version of the math instead of calling the shared
+    scorer. That second copy reported momentum_flip at +8.28% average return on
+    a val run that lost $36,296, because dividing by the sum of twelve
+    re-entries shrinks exactly the markets that lost the most.
     """
     from sim.metrics import score_records
 

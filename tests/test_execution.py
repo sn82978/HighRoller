@@ -222,14 +222,14 @@ def test_fill_count_does_not_depend_on_the_outcome():
 
 
 def test_unfillable_flip_leaves_the_position_untouched():
-    """A flip is all-or-nothing: never half-executed into a both-legs box.
+    """A flip either fully happens or doesn't. It never half-executes into a box.
 
-    `side` reports Up whenever shares_up > 0, so a portfolio holding both legs
-    would look like a plain Up position to every policy and metric downstream.
-    This currently holds for free -- the close and the buy of a flip share a
-    direction, so they compute the same fill price and refuse together -- but
-    it holds by coincidence, and these two tests pin it down so a later change
-    to one leg's guards cannot quietly break it.
+    `side` returns Up whenever shares_up > 0, so a portfolio holding both legs
+    would look like a normal Up position to every policy and metric downstream.
+    Right now this works out for free -- the close and the buy in a flip share a
+    direction, so they get the same fill price and refuse together -- but that's
+    a coincidence. These two tests pin it down so changing one leg's guards
+    later can't quietly break it.
     """
     p = Portfolio(config=FRICTIONLESS)
     p.apply(BUY_UP, 0.50, 0.50, 0.50, candle_index=0)
@@ -244,7 +244,7 @@ def test_unfillable_flip_leaves_the_position_untouched():
 
 
 def test_unfillable_flip_leaves_the_position_untouched_on_nan():
-    """Same invariant, reached the other way: a NaN candle has no fill price."""
+    """Same thing from the other direction: a NaN candle has no fill price."""
     p = Portfolio(config=FRICTIONLESS)
     p.apply(BUY_DOWN, 0.50, 0.50, 0.50, candle_index=0)
     shares_before = p.shares_down

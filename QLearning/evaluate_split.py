@@ -1,24 +1,23 @@
 """
-Score already-trained Q-tables on a split, without retraining anything.
+Score Q-tables we already trained on a given split, without training again.
 
-The sweep in training.py trains 30 agents and scores each on train and val.
-Scoring those same agents on the held-out test split has to be a *separate*
-step, for two reasons:
+training.py trains 30 agents and scores each on train and val. Scoring those
+same agents on the held-out test split has to be its own step, for two reasons:
 
-  - Retraining to reach test would produce 30 different agents. The test number
-    has to describe the agents the val number described, or the two are not a
-    generalisation gap, just two unrelated runs.
-  - The test split is budgeted for exactly one scored pass. Bundling it into
-    the training entry point means every future `python QLearning/training.py`
-    spends that budget again.
+  - If we retrained to get to test we'd have 30 different agents, and then the
+    val number and the test number wouldn't describe the same thing. It'd be two
+    unrelated runs, not a generalisation gap.
+  - The test split is only supposed to be scored once. If that were bundled into
+    the training entry point, every future `python QLearning/training.py` would
+    burn that one shot again.
 
 So this loads QLearning/models/<family>_seed<NN>.npy, plays each agent greedily
-over the requested split, and appends the same interchange schema every other
-track writes.
+over whichever split you ask for, and appends rows in the same shared schema
+every other track uses.
 
     python QLearning/evaluate_split.py --split test --allow-test
 
-Refuses --split test without --allow-test, like every other entry point here.
+Refuses --split test without --allow-test, same as everything else here.
 """
 
 import argparse
@@ -85,10 +84,10 @@ def main(argv=None):
     out_csv = metrics_path(args.family, args.split)
     markets_csv = os.path.join(OUT_DIR, "markets.csv")
 
-    # Appending onto an existing scored pass would double every market in the
-    # table. Refuse rather than silently produce a 60-row "30-run" sweep -- the
-    # exact corruption two concurrent sweeps caused before training.py took a
-    # lock.
+    # Appending onto a split we already scored would double every market in the
+    # table. Better to refuse than to quietly write a 60-row "30-run" sweep,
+    # which is exactly what two concurrent sweeps did before training.py started
+    # taking a lock.
     if os.path.exists(out_csv):
         raise SystemExit(
             f"{out_csv} already exists. That split has been scored. Delete the "

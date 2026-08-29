@@ -74,13 +74,13 @@ def main():
     for s in args.slippages:
         mk = run(df, s, args.threshold, args.stake, args.hold_side, args.split)
         for name, g in mk.groupby("strategy"):
-            # Delegated to the shared scorer rather than recomputed here. This
-            # block used to divide pnl by stake_deployed, which sums the
-            # notional of every entry -- so a momentum_flip market that flipped
-            # twelve times got a $1,200 denominator for the one $100 bankroll
-            # it actually had at risk, shrinking exactly the markets that lost
-            # most. It reported momentum_flip at +8.28% average return on a run
-            # whose total was -$36,296. sim.metrics divides by the allotment.
+            # Call the shared scorer instead of doing the math here. This block
+            # used to divide pnl by stake_deployed, which adds up the notional of
+            # every entry -- so a momentum_flip market that flipped 12 times got
+            # a $1,200 denominator for the one $100 that was actually at risk.
+            # That shrinks exactly the markets that lost the most, and it
+            # reported momentum_flip at +8.28% average return on a run that lost
+            # $36,296. sim.metrics divides by the allotment instead.
             metrics = score_records(g)
             out.append(
                 dict(

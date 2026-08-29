@@ -1,10 +1,10 @@
 """Tests for the cross-model comparison.
 
-The comparison is the proposal's headline deliverable -- no-trade floor,
-buy-and-hold, XGBoost at its swept threshold, and the Q-learning agent, "on
-identical markets under identical fees". The fees are identical because every
-track now goes through sim.execution; the *markets* are only identical if
-something makes them so, which is what these tests cover.
+The comparison is the main thing the proposal promised -- no-trade, buy-and-hold,
+XGBoost at its swept threshold, and the Q-learning agent, all "on the same
+markets under the same fees". The fees match because every track goes through
+sim.execution now. The MARKETS only match if something actually makes them
+match, which is what these tests are for.
 """
 
 import pandas as pd
@@ -24,12 +24,13 @@ def _rows(strategy, slugs, pnl=1.0):
 
 
 def test_alignment_restricts_everyone_to_the_shared_markets():
-    """Different sample cuts must not become different denominators.
+    """Different sample cuts shouldn't turn into different denominators.
 
     On the real val split the baselines cover 1,343 markets and the rule
-    strategies 1,332, because they drop for different reasons -- a warmup
-    window versus a complete live window. Totalling PnL across those two sets
-    and putting the results in one table compares different populations.
+    strategies cover 1,332, because they drop markets for different reasons (a
+    warmup window vs a complete live window). Adding up PnL over those two
+    different sets and putting them in the same table compares two different
+    populations.
     """
     mk = pd.concat([
         _rows("baseline", ["a", "b", "c", "d"]),
@@ -50,14 +51,14 @@ def test_alignment_is_a_noop_when_coverage_already_matches():
 
 
 def test_alignment_refuses_when_models_share_nothing():
-    """Better to stop than to emit a table over an empty intersection."""
+    """Better to just stop than to print a table over an empty intersection."""
     mk = pd.concat([_rows("a", ["x"]), _rows("b", ["y"])], ignore_index=True)
     with pytest.raises(SystemExit, match="share no markets"):
         align_to_common_markets(mk)
 
 
 def test_alignment_changes_the_reported_total():
-    """If it did not, the tests above would be checking nothing that matters."""
+    """If alignment didn't change the total, the tests above wouldn't mean much."""
     from sim.metrics import score_records
 
     mk = pd.concat([
@@ -77,13 +78,13 @@ def _cost_rows(strategy, slugs, slippage):
 
 
 def test_comparing_across_cost_models_is_refused():
-    """The claim is 'identical markets under identical fees'. Check the fees.
+    """The claim is "same markets, same fees", so actually check the fees.
 
-    generate_trades.py defaulted --slippage 0.0 while every other track
-    defaulted 0.25, so running each track's own documented command produced a
-    table whose rows were priced differently -- worth 196 per $1k on
-    momentum_flip, and a sign flip on its gross edge. Nothing detected it,
-    because the cost model was not recorded anywhere in the outputs.
+    generate_trades.py defaulted to --slippage 0.0 while every other track
+    defaulted to 0.25, so running each track's own documented command gave you a
+    table whose rows were priced differently. That's worth 196 per $1k on
+    momentum_flip, plus a sign flip on its gross edge. Nothing caught it because
+    the cost model wasn't recorded anywhere in the output.
     """
     from sim.compare_models import check_one_cost_model
 
@@ -106,7 +107,7 @@ def test_one_shared_cost_model_passes_and_is_returned():
 
 
 def test_a_track_with_two_cost_models_in_one_file_is_refused():
-    """A half-regenerated markets.csv is worse than a stale one."""
+    """A half-regenerated markets.csv is worse than just a stale one."""
     from sim.compare_models import check_one_cost_model
 
     mk = pd.concat([
@@ -126,13 +127,13 @@ def test_missing_cost_column_warns_instead_of_passing_silently(capsys):
 
 # -- a mean of ratios is not a ratio -------------------------------------
 def test_seed_family_reports_the_whole_distribution_not_just_a_mean():
-    """profit_factor is unbounded, so its mean across seeds is not a summary.
+    """profit_factor has no upper bound, so averaging it across seeds is useless.
 
-    On the real test split three of the thirty seeds happened to have almost no
-    losing markets and scored 207, 54 and 13. The mean came out at 9.85 -- which
-    reads as a wildly profitable agent -- while the median was 0.47 and 23 of 30
-    seeds lost money. Anything that reports the mean has to report the median
-    beside it.
+    On the real test split, 3 of the 30 seeds happened to have almost no losing
+    markets and scored 207, 54 and 13. The mean came out to 9.85, which reads
+    like a wildly profitable agent, but the median was 0.47 and 23 of the 30
+    seeds lost money. If we report the mean we have to report the median next to
+    it.
     """
     from sim.compare_models import RATIO_METRICS, score_seed_family
 

@@ -1,49 +1,43 @@
-"""The one definition of every trading metric in this project.
+"""All the trading metrics live here, so every model is scored the same way.
 
-Both scoring paths -- ``BaselineModels.metrics.trading_metrics`` (which starts
-from ``MarketResult`` objects) and ``sim.evaluation.score`` (which starts from a
-committed ``markets.csv``) -- delegate here, so the four-way comparison the
-proposal asks for is computed by one piece of code rather than two that happen
-to use the same words.
+Both scoring paths call into this: BaselineModels.metrics.trading_metrics
+(starts from MarketResult objects) and sim.evaluation.score (starts from a
+markets.csv). They used to be two separate implementations and they didn't
+agree -- max_drawdown was positive in one and negative in the other, Sharpe was
+taken over different markets, and fee drag/turnover only existed in one of them.
+You can't put numbers in the same table if they're computed differently, which
+is the whole point of the four-way comparison.
 
-They did not previously agree. ``max_drawdown`` came out positive from one and
-negative from the other; Sharpe used a different set of markets in each; fee
-drag and turnover existed in one and not the other. Numbers that disagree by
-definition cannot be put in the same table, which is exactly what the report's
-remaining goal requires.
+Some of these definitions are judgement calls, so here's what we picked and why:
 
-The contested calls, settled
-----------------------------
-**Per-market return, and therefore Sharpe, is taken over every market in the
-split** -- a market the policy sat out contributes a return of exactly 0.0, not
-a missing value. This is the call that matters most. Scoring a selective policy
-only on the markets it chose flatters it against an always-on policy like
-buy-and-hold: an agent that trades 40 markets out of 1,343 and happens to win
-them looks superb, while the fact that its capital was idle for the other 1,303
-disappears. Over the full sequence, sitting out is a real outcome with a real
-(zero) return. Both current baselines trade 100% of markets, so this changes
-none of the published baseline numbers -- it makes the definition safe for the
-Q-learning agent, which does not.
+Per-market return (and so Sharpe) covers EVERY market in the split. A market
+the policy sat out counts as a return of 0.0, not as missing. This one matters
+a lot. If you only score a selective policy on the markets it picked, it looks
+way better than it should next to something like buy-and-hold: an agent that
+trades 40 of 1,343 markets and gets lucky looks amazing, and the 1,303 markets
+where its money sat idle just vanish. Sitting out is a real outcome with a real
+return of zero. Both baselines trade 100% of markets so this doesn't change any
+of their numbers -- it's here for the Q-learning agent, which is very selective.
 
-**Win rate is taken over traded markets only.** A market you sat out is neither
-a win nor a loss, and counting it as a loss would make the no-trade floor score
-0% rather than undefined. So win rate answers "when this policy committed
-capital, how often was it right" while Sharpe answers "what did running this
-policy do to a portfolio". Different questions; both are standard; the pairing
-is only confusing if you do not say so, so it is said here.
+Win rate only covers markets we actually traded. A market you sat out isn't a
+win or a loss, and counting it as a loss would give the no-trade baseline 0%
+instead of undefined. So win rate answers "when we bet, how often were we
+right" and Sharpe answers "what did running this do to the account". Two
+different questions, both standard, only confusing if nobody says which is
+which.
 
-**Max drawdown is a positive dollar figure measured from a zero baseline.** The
-running peak starts at 0 rather than at the first market's PnL, so a policy that
-loses from the very first market has that loss counted. Reported as a magnitude
-(a drawdown *of* $4,423), never as a percentage.
+Max drawdown is a positive dollar number measured from zero. The running peak
+starts at 0 instead of at the first market's PnL, so a strategy that loses money
+starting from market #1 actually gets that counted. Always a magnitude (a
+drawdown OF $4,423), never a percent.
 
-**Fee drag divides by net gross PnL** -- realised PnL with fees added back,
-losing markets contributing their actual negative PnL -- and is NaN, never 0.0,
-when that quantity is <= 0. The alternative convention of summing only
-profitable markets makes the number look best exactly when the strategy is
-worst: on the same buy-and-hold trades the two differ by a factor of 21.5
-(6.9% against positive-only, 147.3% against net gross). A hard 0.0 here is also
-what a fee accumulator that was never wired up looks like, so it stays NaN.
+Fee drag divides by net gross PnL -- realised PnL with the fees added back,
+where losing markets keep their negative PnL. It's NaN and not 0.0 when that's
+<= 0. The other option is to only sum the profitable markets, but that makes the
+number look best exactly when the strategy is doing worst: on identical
+buy-and-hold trades the two differ by 21.5x (6.9% positive-only vs 147.3% net
+gross). Also, a hard 0.0 is what a broken fee counter looks like, so NaN is
+safer.
 """
 
 from __future__ import annotations
@@ -53,18 +47,17 @@ import os
 import numpy as np
 import pandas as pd
 
-#: 15-minute markets in a year: 4/hour * 24 * 365. Sharpe means nothing without
-#: stating what period it was scaled from, so it is named rather than inlined.
+#: 15-minute markets in a year: 4/hour * 24 * 365. Named instead of inlined
+#: because a Sharpe number is meaningless unless you say what you scaled it from.
 MARKETS_PER_YEAR = 35_040
 
-#: The interchange schema. Every track writes these columns to its markets.csv
-#: and :func:`score_records` reads exactly these, so a model is comparable to
-#: the others by construction rather than by convention.
+#: The shared schema. Every track writes these columns to its markets.csv and
+#: score_records() reads exactly these, so models are comparable automatically
+#: instead of because we remembered to keep them in sync.
 #:
-#: ``fees`` through ``early_exit`` are what the old CSV schema was missing, and
-#: their absence is why ``sim.evaluation.score`` could not compute fee drag,
-#: turnover or holding period at all -- the numbers were not lost in the
-#: arithmetic, they were never written down.
+#: The old schema was missing everything from `fees` through `early_exit`, which
+#: is why sim.evaluation.score just couldn't compute fee drag, turnover or
+#: holding period. The arithmetic wasn't wrong, the inputs were never saved.
 MARKET_RECORD_FIELDS: tuple[str, ...] = (
     "strategy",
     "event_slug",
@@ -84,28 +77,26 @@ MARKET_RECORD_FIELDS: tuple[str, ...] = (
 )
 
 
-#: Column stamping the cost model each row was simulated under. Not part of
-#: MARKET_RECORD_FIELDS -- it describes the run, not the market -- but written
-#: alongside so "identical costs" is checkable from the artefacts instead of
-#: being a convention held in someone's head.
+#: Records which cost model a row was simulated under. It's not in
+#: MARKET_RECORD_FIELDS because it describes the run, not the market, but we
+#: write it anyway so "everything used the same fees" is something you can
+#: actually check in the file instead of just hoping.
 COST_MODEL_FIELD = "slippage_frac"
 
 
 def write_markets(
     path: str, frame: pd.DataFrame, split: str, *, slippage_frac: float | None = None
 ) -> int:
-    """Write one split's rows into a track's markets.csv, keeping the others.
+    """Write one split into markets.csv without wiping the other splits.
 
-    The tracks used to overwrite this file wholesale. That is invisible while
-    everything runs on val, and destructive the moment a second split is
-    scored: `run_baselines.py --split test` deleted every val row, and the next
-    `compare_models.py --split val` then had nothing to read for that track --
-    silently, since a track with no rows for a split is a `[skip]`, not an
-    error.
+    Everything used to just overwrite this file. You never notice while you're
+    only running val, but the second you score test it deletes all the val rows,
+    and then compare_models.py --split val finds nothing for that track. It
+    doesn't even error -- a track with no rows just prints [skip].
 
-    Replacing only the rows whose `split` matches keeps every split already
-    scored and makes re-running one split idempotent rather than doubling it.
-    Returns the number of rows kept from the previous file.
+    So we only replace the rows for this split. That also means re-running the
+    same split replaces instead of duplicating. Returns how many rows we kept
+    from the old file.
     """
     if slippage_frac is not None:
         frame = frame.copy()
@@ -125,22 +116,20 @@ def write_markets(
 
 
 def _capital_basis(mk: pd.DataFrame) -> np.ndarray:
-    """Capital a policy had at risk in each market -- the return denominator.
+    """How much money was actually at risk per market. This is what we divide by.
 
-    This is ``stake``, the per-market allotment (one $100 bankroll), **not**
-    ``stake_deployed``, which sums the notional of every entry. Those differ
-    whenever a policy re-enters: momentum_flip rolls one position through up to
-    12 flips, and summing them charges it $1,200 of capital for a market where
-    $100 was ever at risk.
+    Use `stake` (the $100 we allot to each market), NOT `stake_deployed`, which
+    adds up the notional of every single entry. They're different as soon as a
+    strategy re-enters -- momentum_flip can flip 12 times in one market, so
+    stake_deployed says $1,200 when only $100 was ever on the line.
 
-    That distinction is not cosmetic. Dividing each market's PnL by the summed
-    figure shrinks precisely the markets that flipped most -- which are the ones
-    that lost most -- so the mean of the per-market ratios came out at +8.3% on
-    a val run whose dollar total was -$36,296, with an annualised Sharpe of
-    +38.8. A losing strategy read as a spectacular one.
+    This really matters. Dividing by the summed version shrinks exactly the
+    markets that flipped the most, and those are also the biggest losers. We got
+    a mean per-market return of +8.3% and a Sharpe of +38.8 on a val run that
+    lost $36,296 in actual dollars. It made a terrible strategy look great.
 
-    Falls back to ``stake_deployed`` when ``stake`` is absent or zero, which is
-    the single-entry case where the two are equal anyway.
+    Falls back to stake_deployed if `stake` is missing or zero -- that's the
+    single-entry case where they're the same number anyway.
     """
     deployed = mk.stake_deployed.to_numpy(dtype=float)
     if "stake" not in mk.columns:
@@ -150,11 +139,11 @@ def _capital_basis(mk: pd.DataFrame) -> np.ndarray:
 
 
 def _max_drawdown_dollars(pnl: np.ndarray) -> float:
-    """Worst peak-to-trough of the cumulative PnL path, as a positive number.
+    """Worst peak-to-trough drop in cumulative PnL, returned as a positive number.
 
-    The peak sequence is seeded with 0.0 so a policy that is underwater from its
-    very first market has that drawdown counted rather than measured from the
-    hole it already dug.
+    We start the running peak at 0.0 so that a strategy losing money from market
+    #1 onward actually gets that counted, instead of measuring from whatever
+    hole it had already dug itself into.
     """
     if len(pnl) == 0:
         return 0.0
@@ -178,11 +167,11 @@ def score_records(
     *,
     order_by: str = "start_ts",
 ) -> dict[str, float]:
-    """Score one policy on one split. ``mk`` carries :data:`MARKET_RECORD_FIELDS`.
+    """Score one policy on one split. `mk` has the MARKET_RECORD_FIELDS columns.
 
-    One row per market, including markets the policy declined to trade -- their
-    presence is what makes the return series comparable across policies with
-    different participation rates.
+    One row per market, and that includes markets the policy chose not to trade.
+    Keeping those rows is what lets us compare a picky policy against one that
+    trades everything.
     """
     missing = {"pnl", "fees", "stake_deployed", "notional_traded", "n_trades"} - set(mk.columns)
     if missing:
@@ -191,8 +180,8 @@ def score_records(
     if n == 0:
         raise ValueError("no markets to score")
 
-    # Drawdown follows the order the markets actually resolved in, so sort here
-    # rather than trusting the caller to have done it.
+    # Drawdown depends on the order markets resolved in, so sort here instead of
+    # assuming whoever called us already did.
     if order_by in mk.columns:
         mk = mk.sort_values(order_by, kind="stable")
 
@@ -204,15 +193,15 @@ def score_records(
     traded_mask = mk.n_trades.to_numpy(dtype=float) > 0
     n_traded = int(traded_mask.sum())
 
-    # Capital at risk per market, and the total actually committed: a market the
-    # policy sat out deployed nothing, so it contributes 0 to the denominator of
-    # the per-$1,000 figures while still contributing a 0.0 return to the series.
+    # Money at risk per market, plus the total we actually committed. A market we
+    # sat out deployed nothing, so it adds 0 to the per-$1k denominator but still
+    # adds a 0.0 return to the series.
     basis = _capital_basis(mk)
     deployed = float(basis[traded_mask].sum())
 
-    # Per-market return over EVERY market: untraded markets return 0.0. See the
-    # module docstring -- this is what keeps a selective policy comparable to an
-    # always-on one.
+    # Return for EVERY market, with untraded ones at 0.0. See the docstring at
+    # the top -- this is the thing that keeps a picky policy honest next to one
+    # that always trades.
     with np.errstate(divide="ignore", invalid="ignore"):
         rets = np.where(basis > 0, pnl / np.where(basis > 0, basis, 1.0), 0.0)
 

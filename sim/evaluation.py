@@ -1,8 +1,9 @@
 """
-Shared evaluation harness so strategies/, QLearning/ and BaselineModels/ are actually
-comparable: same train/val/test split (market_slugs), same fill engine (simulate_market,
-which drives sim.execution.Portfolio), same metrics (score() on MARKET_RECORD_FIELDS).
-Point every model at this instead of reimplementing any of the three per model.
+Shared evaluation code so strategies/, QLearning/ and BaselineModels/ are
+actually comparable. Same train/val/test split (market_slugs), same fill engine
+(simulate_market, which drives sim.execution.Portfolio), and same metrics
+(score() on MARKET_RECORD_FIELDS). Point every model at this instead of each one
+reimplementing all three.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from sim.metrics import MARKET_RECORD_FIELDS, MARKETS_PER_YEAR, score_records
 
 # last live candle index (0..59 once pre-open rows are dropped)
 LAST_INDEX = 59
-# where a held position redeems; one past the last live candle, matching
+# where a held position redeems -- one past the last live candle, same as
 # BaselineModels/backtest.py so holding periods mean the same thing in both.
 SETTLEMENT_CANDLE = LAST_INDEX + 1
 
@@ -76,20 +77,20 @@ UNIVERSES: dict[str, tuple[str, ...]] = {
 
 
 def load_universe_candles(name: str, *, allow_test: bool = False) -> pd.DataFrame:
-    """Candles for one split or one named multi-split universe.
+    """Candles for one split, or for a named universe made of several splits.
 
-    The single place a multi-split load is allowed to happen, because the last
-    one was not: ``strategies/generate_trades.py`` built its own "all" universe
-    by calling ``load_split("test", allow_test=True)`` with the flag hardcoded,
-    and ``--split all`` was its default. Every headline number that track has
-    published was therefore computed over the held-out block, while the progress
-    report states in two places that the test split has never been read.
+    This is the only place a multi-split load is allowed to happen, because the
+    last one wasn't: strategies/generate_trades.py built its own "all" universe
+    by calling load_split("test", allow_test=True) with the flag hardcoded, and
+    "all" was the default. So every headline number that track published was
+    computed over the held-out block, while the progress report says twice that
+    the test split has never been read.
 
-    ``data_loader.load_split`` refuses the test split without ``allow_test``,
-    but that guard only works if no caller hardcodes the flag. Routing every
-    multi-split load through here means the flag has to come from the caller's
-    own ``--allow-test``, so reading the held-out block stays a deliberate act
-    that shows up in a shell history and a diff.
+    data_loader.load_split does refuse test without allow_test, but that only
+    helps if nobody hardcodes the flag. Routing every multi-split load through
+    here means the flag has to come from the caller's own --allow-test, so
+    reading the held-out data stays something deliberate that shows up in your
+    shell history and in a diff.
     """
     if name in SPLIT_NAMES:
         return load_split_candles(name, allow_test=allow_test)
@@ -115,19 +116,19 @@ DecideFn = Callable[[pd.Series, Portfolio, int], int]
 
 @dataclass
 class MarketResult:
-    """One policy's play of one market, in the interchange schema.
+    """One policy's run through one market, in the shared schema.
 
-    Field-for-field the same quantities ``BaselineModels.metrics.MarketResult``
-    carries, so both feed :func:`sim.metrics.score_records` without translation.
+    Same fields as BaselineModels.metrics.MarketResult, so both of them can go
+    straight into sim.metrics.score_records with no conversion in between.
     """
 
     strategy: str
     event_slug: str
     start_ts: int
     split: str
-    #: capital allotted to this market -- the return denominator. Distinct from
-    #: stake_deployed, which sums every entry's notional and so double-counts a
-    #: position that was rolled rather than added to.
+    #: money allotted to this market, and what we divide returns by. Not the
+    #: same as stake_deployed, which adds up every entry's notional and so
+    #: double-counts a position that got rolled instead of added to.
     stake: float
     pnl: float
     fees: float
@@ -159,10 +160,10 @@ def simulate_market(
     Shared by the rule baselines and the XGB baseline; the Q-learning agent trains with
     its own step loop but evaluates through this same function.
 
-    Trades are stamped with the candle they *fill* on, not the one that signalled
-    them -- matching BaselineModels/backtest.py, which was already doing that.
-    The two harnesses used to differ by one candle here, which quietly shifted
-    every holding period between the tracks by the same amount.
+    Trades get stamped with the candle they FILL on, not the one that signalled
+    them, which matches BaselineModels/backtest.py -- it was already doing this.
+    The two harnesses used to be off by one candle from each other here, which
+    quietly shifted every holding period between the tracks by the same amount.
     """
     config = config or ExecutionConfig()
     portfolio = Portfolio(config=config)

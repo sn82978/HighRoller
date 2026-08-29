@@ -1,24 +1,24 @@
-"""Regenerate every baseline number in RESULTS.md, in one command.
+"""Regenerates every baseline number in RESULTS.md with one command.
 
     python BaselineModels/run_baselines.py                  # val, writes RESULTS.md
     python BaselineModels/run_baselines.py --split test --allow-test   # once, at the end
 
-Runs all three non-RL policies -- the no-trade floor, buy-and-hold, and XGBoost
-paired with its swept threshold -- over the same markets, through the same cost
-model, scored by the same function. Writes:
+Runs all three non-RL policies -- no-trade, buy-and-hold, and XGBoost at its
+swept threshold -- over the same markets, through the same cost model, scored by
+the same function. Writes:
 
-    RESULTS.md                          the report, regenerated from this run
-    BaselineModels/output/markets.csv   per-market rows in the shared schema,
-                                        so sim/compare_models.py picks them up
+    RESULTS.md                          the report, rebuilt from this run
+    BaselineModels/output/markets.csv   per-market rows in the shared schema so
+                                        sim/compare_models.py picks them up
     figs/xgb_calibration_<split>.png    the calibration curve RESULTS.md cites
 
-Why this exists. RESULTS.md quoted a buy-and-hold column and a `total_fills`
-row, and `xgb_baseline.main()` produced neither -- it never ran buy-and-hold at
-all, and no committed code emitted that metric. So the document could not be
-regenerated from the repo, and nothing checked whether its numbers still matched
-the code underneath them. The baselines track also wrote no markets.csv, so
-compare_models.py skipped it entirely and the four-way comparison had a hole in
-it exactly where the tuned baseline should have been.
+Why this file exists: RESULTS.md had a buy-and-hold column and a total_fills row
+in it, and xgb_baseline.main() produced neither. It never ran buy-and-hold at
+all, and nothing in the repo emitted that metric. So you couldn't regenerate the
+document from the code, and nothing was checking whether its numbers still
+matched. The baselines track also never wrote a markets.csv, so
+compare_models.py skipped it and the four-way comparison had a hole right where
+the tuned baseline should have been.
 """
 
 from __future__ import annotations
@@ -66,18 +66,18 @@ OUT_DIR = os.path.join(ROOT, "BaselineModels/output")
 FIGS_DIR = os.path.join(ROOT, "figs")
 REPORT = os.path.join(ROOT, "RESULTS.md")
 
-#: The one split a hyperparameter may be selected on.
+#: The only split you're allowed to pick a hyperparameter on.
 SELECTION_SPLIT = "val"
 
 
 def selects_on_eval_split(split: str) -> bool:
-    """May theta be read off the sweep of the split we are reporting?
+    """Can we read theta off the sweep of the split we're reporting on?
 
-    Only when that split is validation. Everywhere else -- train, and above all
-    test -- the threshold has to come from a separate val sweep, or the
-    "held-out" number is the maximum over eleven thresholds tried on the
-    held-out data. Broken out of main() so this stays a testable claim rather
-    than one branch inside a 200-line driver.
+    Only if that split is val. Anywhere else -- train, and especially test --
+    theta has to come from its own val sweep. Otherwise the "held-out" number is
+    really just the best of eleven thresholds we tried on the held-out data.
+    Pulled out of main() so it's something a test can check instead of one
+    branch buried in a 200-line function.
     """
     return split == SELECTION_SPLIT
 
@@ -97,10 +97,11 @@ def _fmt(df: pd.DataFrame) -> str:
 
 
 def load_with_warnings(split: str, allow_test: bool) -> tuple[pd.DataFrame, list[str]]:
-    """Load a split, capturing build_features' sample-cut warnings verbatim.
+    """Load a split and capture build_features' sample-cut warnings word for word.
 
-    Those warnings are the only record that markets were dropped for an
-    insufficient warmup window, and a silent cut reads as full coverage.
+    Those warnings are the only place it's recorded that we dropped markets for
+    having too short a warmup window. If we swallow them it looks like we
+    covered everything.
     """
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -109,12 +110,12 @@ def load_with_warnings(split: str, allow_test: bool) -> tuple[pd.DataFrame, list
 
 
 def fee_denominator_check(named: dict[str, list]) -> pd.DataFrame:
-    """Our fee ratio next to the positive-only one, on identical trades.
+    """Our fee ratio next to the positive-only one, on the exact same trades.
 
-    The report's Section 3.3 turns on this gap, so it is computed rather than
-    quoted. `positive_only_gross` sums the gross PnL of profitable markets only,
-    dropping every loss from the denominator while its fees stay in the
-    numerator -- which flatters a policy exactly when it is doing worst.
+    Section 3.3 of the report hinges on this gap, so we compute it instead of
+    just quoting it. positive_only_gross sums gross PnL over profitable markets
+    only, which drops every loss from the denominator but keeps their fees in
+    the numerator. That makes a policy look best right when it's doing worst.
     """
     rows = {}
     for name, results in named.items():
@@ -199,12 +200,12 @@ def main(argv=None) -> None:
 
     # -- policies --------------------------------------------------------
     print("sweeping theta...")
-    # Theta is a hyperparameter, so it is chosen on validation and then frozen.
-    # This used to select it from the evaluation split's own sweep, which is
-    # fine while that split IS val and silently ruinous on --split test: the
-    # threshold would be picked by looking at the held-out data, and the number
-    # reported as held-out would be the best of eleven thresholds tried on it.
-    # sweep_theta's own docstring says "run this on validation"; now it does.
+    # Theta is a hyperparameter, so we pick it on val and then freeze it. This
+    # used to select from the eval split's own sweep, which is fine when that
+    # split IS val but quietly wrecks --split test: you'd be choosing the
+    # threshold by looking at the held-out data, and then reporting the best of
+    # eleven thresholds you tried on it as a held-out result. sweep_theta's
+    # docstring literally says "run this on validation", so now it does.
     sweep = sweep_theta(evalset, p_hat, config=config)
     if selects_on_eval_split(args.split):
         selection_sweep = sweep
@@ -280,8 +281,8 @@ def main(argv=None) -> None:
       f"`{config.slippage_frac}` of the fill candle's high-low range, "
       f"${config.stake_dollars:g} per entry.")
     w()
-    # The two documents disagree on purpose, and a reader who spots it without
-    # this note will assume one of them is wrong.
+    # The two files disagree on purpose. Anyone who notices without this note is
+    # going to assume one of them is just wrong.
     w("**Scope: this file scores the baselines on every market this track "
       "covers.** `comparison.csv` scores the same policies on the smaller set "
       "*every* track covers, so its totals for `buy_and_hold` and the XGBoost "
@@ -393,8 +394,8 @@ def main(argv=None) -> None:
     w(_fmt(cal))
     w("```")
     w()
-    # Forward slashes: this string is read on Linux and macOS as often as here,
-    # and os.path.relpath hands back backslashes on Windows.
+    # Force forward slashes -- people read this on Linux and macOS too, and
+    # os.path.relpath gives you backslashes on Windows.
     w(f"Figure: `{os.path.relpath(fig_path, ROOT).replace(os.sep, '/')}` "
       f"(see FIGURES.md for the full index)")
     w()

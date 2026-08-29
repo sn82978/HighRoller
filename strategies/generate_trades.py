@@ -127,13 +127,13 @@ def main():
         "--slippage",
         type=float,
         default=0.25,
-        # Was 0.0, while this very help string said the project default is 0.25
-        # and every other track defaulted to 0.25. Running the documented
-        # command therefore priced this track's fills differently from the
-        # models it is tabled against -- and not by a rounding margin:
-        # momentum_flip reads -77/1k at 0.0 against -273/1k at 0.25, and its
-        # gross edge flips sign, +48/1k to -156/1k. The comparison's whole
-        # claim is "identical markets under identical costs".
+        # This was 0.0 even though the help text right below says the project
+        # default is 0.25, and every other track did default to 0.25. So running
+        # the documented command priced this track's fills differently from the
+        # models it sits next to in the table. Not a rounding difference either:
+        # momentum_flip is -77/1k at 0.0 vs -273/1k at 0.25, and its gross edge
+        # flips sign, +48/1k to -156/1k. The comparison's whole claim is "same
+        # markets, same costs".
         help="adverse fill as a fraction of the candle's high-low range "
         "(sim.execution.ExecutionConfig.slippage_frac; project default is 0.25)",
     )

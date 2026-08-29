@@ -52,9 +52,9 @@ def test_unknown_split_raises():
 
 
 # -- the same guard, one layer up -----------------------------------------
-# load_split's refusal only works if no caller hardcodes allow_test=True.
-# strategies/generate_trades.py did exactly that to build its "all" universe,
-# and "all" was its default, so its ordinary invocation read the held-out block.
+# load_split only refuses if nobody hardcodes allow_test=True. That's exactly
+# what strategies/generate_trades.py did to build its "all" universe, and "all"
+# was the default, so just running it normally read the held-out block.
 def test_all_universe_refuses_without_allow_test():
     from sim.evaluation import load_universe_candles
 

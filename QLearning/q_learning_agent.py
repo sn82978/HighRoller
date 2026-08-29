@@ -1,13 +1,13 @@
 import numpy as np
 
 class QLearningAgent:
-    """Tabular Q-learning with position-masked actions.
+    """Tabular Q-learning, with actions masked by what position we're holding.
 
-    Every random draw comes from `self.rng`, a seeded Generator, rather than the
-    global np.random state. Exploration, tie-breaking and the environment's
-    episode sampling used to run off the unseeded global, so the "30 independent
-    runs" the report averages over could not be reproduced -- not on another
-    machine, and not on the same one twice.
+    Every random draw goes through self.rng, a seeded Generator, instead of the
+    global np.random. Exploration, tie-breaking and the env's episode sampling
+    all used to run off the unseeded global, which meant the "30 independent
+    runs" the report averages couldn't be reproduced at all -- not on another
+    machine, and not even twice on the same one.
     """
 
     def __init__(self, state_shape, n_actions=4, alpha=0.1, gamma=0.99, epsilon=1.0,

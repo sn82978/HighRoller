@@ -43,8 +43,8 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
 
         ep = env._ep
         last = ep.iloc[-1]
-        # Same interchange schema every other track writes (sim.metrics), so
-        # compare_models.py scores the agent with the identical function.
+        # Same schema every other track writes (see sim.metrics), so
+        # compare_models.py can score the agent with the exact same function.
         trades = env.portfolio.trades
         entries = [t for t in trades if t.action in (BUY_UP, BUY_DOWN)]
         closes = [t for t in trades if t.action == CLOSE]
@@ -68,10 +68,10 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
                 ),
                 early_exit=bool(closes),
                 winner=str(last.winner),
-                # Stamps the cost model this row was simulated under, so
-                # compare_models.py can verify that "identical fees" actually
-                # held rather than trusting that every track was launched with
-                # the same flag. See sim.metrics.COST_MODEL_FIELD.
+                # Save which cost model this row used, so compare_models.py can
+                # actually check that "same fees" held instead of trusting that
+                # every track got launched with matching flags. See
+                # sim.metrics.COST_MODEL_FIELD.
                 slippage_frac=env.config.slippage_frac,
             )
         )
@@ -92,19 +92,19 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
         s = score(mk)
         s["model"] = model_name
         s["iteration"] = iteration
-        # The run seed, not agent.seed -- the agent's is derived from it, and
-        # recording the derived one makes the column useless for re-running.
+        # The run seed, not agent.seed. The agent's is derived from this one,
+        # and saving the derived value makes the column useless for re-running.
         s["seed"] = seed
         _append_row(metrics_path(model_family(model_name), env_name), pd.DataFrame([s]))
 
-        # same schema as the other models so compare_models.py can just concat these
+        # same schema as the other models so compare_models.py can just concat them
         _append_row(os.path.join(OUT_DIR, "markets.csv"), mk)
 
     return all_ep_actions
 
 
 def model_family(model_name):
-    """'qlearning_seed07' -> 'qlearning'. The per-run suffix drops off."""
+    """'qlearning_seed07' -> 'qlearning'. Just strips the per-run suffix."""
     return model_name.split("_seed")[0].split("ITER")[0]
 
 
@@ -113,14 +113,13 @@ def metrics_path(family, env_name):
 
 
 def _append_row(path, df):
-    """Append, but refuse to append a different schema onto an existing file.
+    """Append a row, but refuse if the schema doesn't match what's already there.
 
-    These files are written 30 times per sweep in append mode. pandas writes
-    values in the frame's own column order without checking them against the
-    header already on disk, so appending a changed schema silently produces a
-    file whose columns do not mean what its header says. That is exactly what
-    the committed pre-refactor metrics CSVs would have become when score()'s
-    output changed.
+    These get written 30 times per sweep in append mode. pandas writes values in
+    the frame's own column order and never checks them against the header
+    already on disk, so if the schema changes you silently end up with a file
+    whose columns don't match its own header. That's exactly what would have
+    happened to the old committed metrics CSVs when score()'s output changed.
     """
     if os.path.exists(path):
         header = list(pd.read_csv(path, nrows=0).columns)
@@ -135,11 +134,11 @@ def _append_row(path, df):
 
 
 def reset_outputs(family):
-    """Clear one model family's outputs so a sweep starts from empty.
+    """Wipe one model family's outputs so a sweep starts clean.
 
-    Every run of the 30-iteration sweep appended to the same markets.csv and
-    metrics CSVs without ever truncating them, so a second sweep silently
-    doubled every row and compare_models.py would score each market twice.
+    Every run of the 30-run sweep appended to the same markets.csv and metrics
+    CSVs and nothing ever truncated them, so running a second sweep quietly
+    doubled every row and compare_models.py scored each market twice.
     """
     removed = []
     for env_name in ("train", "val", "test"):
@@ -162,14 +161,14 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False,
     if seed is None:
         seed = iteration
 
-    # data prep. Passed in by run_sweep so 30 runs don't re-read the same
-    # parquet 30 times; loaded here when main() is called on its own.
+    # data prep. run_sweep passes these in so 30 runs don't re-read the same
+    # parquet 30 times. If you call main() directly we load them here.
     if episodes is None:
         print("getting training data")
         episodes = get_training_data()
 
-    # make env and agent. Two seeds off one run seed: the env samples which
-    # markets get played, the agent samples exploration and tie-breaks.
+    # env and agent. Two seeds derived from one run seed -- the env picks which
+    # markets get played, the agent picks exploration moves and breaks ties.
     print(f"making environment and agent (seed {seed})")
     env = TradingEnv(episodes=episodes, config=config, seed=seed)
     agent = QLearningAgent(
@@ -300,15 +299,16 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False,
     return agent
 
 
-#: One run per seed. The report averaged 30 runs across two configurations it
-#: called "70/20" and "80/20", but those names never described anything the code
-#: does: get_training_data()/get_eval_data() read the canonical 70/15/15 temporal
+#: One run per seed. The progress report averaged 30 runs across two setups it
+#: called "70/20" and "80/20", but those names never matched anything the code
+#: did: get_training_data()/get_eval_data() read the standard 70/15/15 temporal
 #: split from BaselineModels.data_loader, and "0.8T_0.2E" was only ever a
-#: filename prefix. There is no split-ratio parameter anywhere in this track.
-#: The old ratios came from split_data.py, which partitioned day-files at random
-#: -- the non-temporal split the proposal specifically ruled out -- and is marked
-#: SUPERSEDED. So the two configurations are retired rather than reimplemented,
-#: and the spread is measured across seeds on the one split every model shares.
+#: filename prefix. There's no split-ratio argument anywhere in this track. The
+#: old ratios came from split_data.py, which split day-files at random -- the
+#: non-temporal split the proposal explicitly ruled out -- and that file is
+#: marked SUPERSEDED now. So instead of reimplementing the two configs we
+#: dropped them, and measure the spread across seeds on the one split every
+#: model shares.
 DEFAULT_RUNS = 30
 DEFAULT_EPISODES = 6789
 MODEL_FAMILY = "qlearning"
@@ -316,14 +316,14 @@ MODEL_FAMILY = "qlearning"
 
 def run_sweep(n_runs=DEFAULT_RUNS, num_episodes=DEFAULT_EPISODES,
               family=MODEL_FAMILY, config=None, fresh=True):
-    """Train `n_runs` agents, one per seed, and score each on train and val.
+    """Train n_runs agents, one per seed, and score each of them on train and val.
 
-    Holds a lock for the duration. Two sweeps writing the same family append
-    into the same CSVs line by line, and one calling reset_outputs part-way
-    through the other truncates it mid-run: a real overlap here produced 56 rows
-    in a 30-run file and 188,708 duplicate market rows, with no error anywhere.
-    Nothing downstream would have caught it -- score() would happily have
-    averaged each market twice.
+    Takes a lock while it runs. If two sweeps for the same family run at once
+    they append into the same CSVs line by line, and if one calls reset_outputs
+    partway through the other it truncates the file mid-run. This actually
+    happened: we ended up with 56 rows in a 30-run file and 188,708 duplicate
+    market rows, and nothing errored. Nothing downstream would have caught it
+    either -- score() would have just averaged each market twice.
     """
     lock = os.path.join(OUT_DIR, f".{family}.sweep.lock")
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -350,8 +350,8 @@ def _run_sweep_locked(n_runs, num_episodes, family, config, fresh):
     if fresh:
         reset_outputs(family)
 
-    # Loaded once and shared: the episode frames are read-only, and re-reading
-    # the parquet for each of 30 runs was most of the wall clock.
+    # Load once and share. The episode frames are read-only, and re-reading the
+    # parquet for all 30 runs was most of the wall clock time.
     print("loading episodes")
     train_episodes = get_training_data()
     eval_episodes = get_eval_data()

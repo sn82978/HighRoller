@@ -250,16 +250,16 @@ def results_frame(
     split: str = "",
     start_ts: dict[str, int] | None = None,
 ) -> pd.DataFrame:
-    """Per-market results in the interchange schema of :mod:`sim.metrics`.
+    """Per-market results in sim.metrics' shared schema.
 
-    Carries :data:`sim.metrics.MARKET_RECORD_FIELDS` so the frame can be scored
-    by :func:`sim.metrics.score_records`, written as a markets.csv, and compared
-    against the other tracks without any renaming in between. ``gross_pnl``,
-    ``traded``, ``holding_candles`` and ``market_return`` are kept alongside as
-    derived conveniences for plots.
+    Has all the MARKET_RECORD_FIELDS columns, so this frame can go straight into
+    score_records, get written out as a markets.csv, and be compared against the
+    other tracks without renaming anything. gross_pnl, traded, holding_candles
+    and market_return come along too, but only as conveniences for plotting.
 
-    ``start_ts`` maps event_slug -> market start, used to order the cumulative
-    PnL path. Without it the column is 0 and the caller's own ordering stands.
+    start_ts maps event_slug -> market start time, which we use to order the
+    cumulative PnL path. Leave it out and the column is 0, so whatever order the
+    caller had stands.
     """
     start_ts = start_ts or {}
     return pd.DataFrame(
@@ -296,16 +296,15 @@ def trading_metrics(
 ) -> dict[str, float]:
     """The trading table from the proposal, for one policy.
 
-    A thin adapter now: it turns ``MarketResult`` objects into the interchange
-    schema and hands them to :func:`sim.metrics.score_records`, which is the one
-    place any of these quantities is defined. The strategies and Q-learning
-    tracks reach the same function from the other side, starting from a
-    committed markets.csv, so all three are scored by the same code rather than
-    by three implementations that happen to use the same words.
+    This is just an adapter now. It converts MarketResult objects into the
+    shared schema and passes them to sim.metrics.score_records, which is the one
+    place any of these quantities is actually defined. The strategies and
+    Q-learning tracks get to the same function from the other direction,
+    starting from a markets.csv, so all three are scored by the same code
+    instead of three implementations that happen to use the same words.
 
-    Read :mod:`sim.metrics` for the definitions themselves, in particular why
-    Sharpe is taken over every market in the split while win rate is taken over
-    traded markets only.
+    See sim.metrics for the definitions themselves, especially why Sharpe covers
+    every market in the split but win rate only covers traded ones.
     """
     if not results:
         raise ValueError("no markets to score")

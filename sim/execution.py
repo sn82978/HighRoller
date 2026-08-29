@@ -1,37 +1,34 @@
-"""Fees, fills and position accounting for Polymarket BTC Up/Down 15m markets.
+"""Fees, fills and position tracking for the Polymarket BTC Up/Down 15m markets.
 
-Price convention
-----------------
-Every price in this module is an **Up-equivalent** probability in (0, 1), the
-same convention the 15s candle dataset uses: a Down fill at 0.40 is recorded as
-an Up-equivalent 0.60. One Up share pays $1 if the market resolves Up; one Down
-share pays $1 if it resolves Down and costs ``1 - p`` to buy.
+Prices
+------
+Every price here is "Up-equivalent" -- a probability in (0, 1), same as the 15s
+candle dataset. So a Down fill at 0.40 gets stored as Up-equivalent 0.60. One Up
+share pays $1 if the market resolves Up. One Down share pays $1 if it resolves
+Down and costs 1 - p.
 
-Timing convention
------------------
-Features for candle ``c`` are built from candles ``<= c``; the action they
-trigger executes against candle ``c + 1``. ``features.py`` carries the next
-candle's OHLC on each row (``next_open`` / ``next_high`` / ``next_low``) so a
-caller physically cannot fill at a price it used as an input. Nothing in this
-module ever sees a price beyond the candle it was handed.
+Timing
+------
+Features for candle c only use candles <= c, and whatever action they trigger
+fills against candle c + 1. features.py puts the next candle's OHLC on each row
+(next_open / next_high / next_low), so you physically can't fill at a price you
+also used as an input. Nothing in here ever looks past the candle it was given.
 
-One assumption to state rather than bury: slippage is sized from the *fill*
-candle's own high-low range, which is only fully known once that candle closes.
-A live trader would size it from the spread quoted at the moment of the fill
-instead. This is information from the fill candle, but it is spent exclusively
-against the trader -- ``fill_price`` always displaces the price adversely -- so
-it can make a strategy look worse than it is and never better. It is a cost
-assumption, not a source of edge.
+One assumption worth calling out instead of hiding: we size slippage from the
+fill candle's own high-low range, which you'd only know after that candle
+closes. A real trader would use the spread quoted at the moment of the fill.
+Technically that's information from the fill candle, but fill_price() always
+moves the price against us, so it can only make a strategy look worse than it
+is, never better. It's a cost assumption, not free edge.
 
 Fees
 ----
-Polymarket charges the taker ``fee = C * r * p * (1 - p)`` where ``C`` is share
-count and ``p`` the contract price; the crypto category carries ``r = 0.07``,
-the highest rate on the platform. The fee is symmetric in ``p`` (so Up and Down
-pay the same at mirrored prices), peaks at the money, and -- critically --
-**redemption at settlement is free**. Holding to resolution is therefore
-strictly cheaper than closing early, which is the asymmetry the whole project
-turns on. Do not "simplify" that away.
+Polymarket charges takers fee = C * r * p * (1 - p), where C is the number of
+shares and p is the price. Crypto markets use r = 0.07, the highest rate they
+have. The fee is symmetric in p (Up and Down pay the same at mirrored prices)
+and is largest at 50/50. The important part: redeeming at settlement is FREE.
+That makes holding to resolution strictly cheaper than closing early, which is
+the asymmetry this whole project is about. Don't "simplify" it away.
 """
 
 from __future__ import annotations
@@ -64,28 +61,28 @@ ACTION_NAMES = {HOLD: "hold", BUY_UP: "buy_up", BUY_DOWN: "buy_down", CLOSE: "cl
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    """Knobs for the cost model. The RL agent must use the same instance."""
+    """Settings for the cost model. The RL agent has to use the same one."""
 
     fee_rate: float = CRYPTO_FEE_RATE
-    #: Adverse slippage as a fraction of the candle's high-low range. The 15s
-    #: candles show a median high-low of 0.04 (p90 0.12) driven by bid-ask
-    #: bounce in a wide book, so 0.25 charges roughly half the half-spread.
-    #: Set to 0.0 for a frictionless upper bound on strategy performance.
+    #: Slippage against us, as a fraction of the candle's high-low range. Median
+    #: high-low on the 15s candles is 0.04 (p90 is 0.12), mostly bid-ask bounce
+    #: in a wide book, so 0.25 works out to about half the half-spread. Set it to
+    #: 0.0 if you want a frictionless best case.
     slippage_frac: float = 0.25
-    #: Dollars committed per entry. PnL is reported per $1,000 deployed, so this
-    #: only sets the granularity, not the headline number.
+    #: Dollars per entry. We report PnL per $1,000 deployed, so this just sets
+    #: the granularity and doesn't change the headline number.
     stake_dollars: float = 100.0
-    #: Refuse fills outside this band; the tape does touch 0.001/0.999 and
-    #: dividing by a near-zero price produces absurd share counts.
+    #: Don't fill outside this range. The tape really does hit 0.001/0.999, and
+    #: dividing by a price that small gives you a ridiculous number of shares.
     min_price: float = 0.01
     max_price: float = 0.99
 
 
 def taker_fee(shares: float, price: float, fee_rate: float = CRYPTO_FEE_RATE) -> float:
-    """Polymarket taker fee in dollars: ``C * r * p * (1 - p)``.
+    """Polymarket taker fee in dollars: C * r * p * (1 - p).
 
-    Symmetric in ``price``, so it is identical whether you pass the Up price or
-    the Down price of the same trade.
+    Symmetric in price, so you get the same answer whether you pass the Up price
+    or the Down price for the same trade.
     """
     if shares <= 0:
         return 0.0
@@ -99,11 +96,11 @@ def fill_price(
     direction: Literal[-1, 1],
     slippage_frac: float = 0.25,
 ) -> float:
-    """Up-equivalent fill price after adverse slippage.
+    """Up-equivalent fill price once slippage has been charged against us.
 
-    ``direction`` is +1 when the trade *adds* Up-equivalent exposure (buying Up,
-    or selling Down) and -1 when it *reduces* it (buying Down, or selling Up).
-    The price always moves against the trader, so a round trip pays the slippage
+    direction is +1 when the trade adds Up-equivalent exposure (buying Up or
+    selling Down) and -1 when it reduces it (buying Down or selling Up). The
+    price always moves the wrong way for us, so a round trip eats the slippage
     twice on top of the two fees.
     """
     if direction not in (-1, 1):
@@ -117,7 +114,7 @@ def fill_price(
 
 @dataclass
 class Trade:
-    """One executed fill, for the turnover / fee / holding-period metrics."""
+    """A single fill. We need these to compute turnover, fees and holding time."""
 
     candle_index: int
     action: int
@@ -130,10 +127,10 @@ class Trade:
 
 @dataclass
 class Portfolio:
-    """Position and cash for a single market, marked to market every step.
+    """Cash and position for one market, marked to market on every step.
 
-    The per-step reward the Q-learning agent needs is the change in
-    :meth:`value` across a step, which already nets out any fee paid during it.
+    The reward the Q-learning agent wants is just the change in value() over a
+    step, which already has any fee paid during that step subtracted out.
     """
 
     config: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -155,15 +152,15 @@ class Portfolio:
 
     @property
     def shares(self) -> float:
-        """Size of the open position, whichever leg it is on."""
+        """How many shares we're holding, whichever leg they're on."""
         return self.shares_up + self.shares_down
 
     def value(self, price_up: float) -> float:
-        """Mark-to-market value: cash plus both legs at the current price."""
+        """What the account is worth right now: cash plus both legs at current price."""
         return self.cash + self.shares_up * price_up + self.shares_down * (1.0 - price_up)
 
     def exposure(self, price_up: float) -> float:
-        """Dollars currently at risk in the market (excludes cash)."""
+        """Dollars actually at risk in the market. Doesn't count cash."""
         return self.shares_up * price_up + self.shares_down * (1.0 - price_up)
 
     # -- trading ---------------------------------------------------------
@@ -184,11 +181,11 @@ class Portfolio:
         candle_index: int,
         stake: float | None = None,
     ) -> bool:
-        """Open or add to a position on ``side``. Returns whether it filled.
+        """Open or add to a position on `side`. Returns True if it actually filled.
 
-        A fill is refused rather than clamped when the price is outside the
-        tradable band, so a rejected trade shows up as a no-op in the log
-        instead of silently executing somewhere it could not have.
+        If the price is outside the tradable band we refuse the fill instead of
+        clamping it. That way a rejected trade shows up as a no-op in the log,
+        rather than quietly executing at a price it never could have.
         """
         if side not in (Side.UP, Side.DOWN):
             raise ValueError(f"cannot buy side {side!r}")
@@ -224,14 +221,14 @@ class Portfolio:
         return True
 
     def close(self, mid: float, high: float, low: float, candle_index: int) -> bool:
-        """Liquidate the open position early, paying the taker fee again.
+        """Dump the position early, which means paying the taker fee a second time.
 
-        This is the expensive path. :meth:`settle` is the free one.
+        This is the expensive way out. settle() is the free one.
         """
         side = self.side
         if side is Side.FLAT:
             return False
-        # Selling Up reduces Up exposure (-1); selling Down adds it (+1).
+        # Selling Up reduces Up exposure (-1), selling Down adds it (+1).
         direction = -1 if side is Side.UP else 1
         fill_up = fill_price(mid, high, low, direction, self.config.slippage_frac)
         if not self._tradable(fill_up):
@@ -259,16 +256,16 @@ class Portfolio:
         return True
 
     def settle(self, winner: str, candle_index: int = 60) -> float:
-        """Redeem at resolution. **No fee** -- this is the free exit.
+        """Redeem at resolution. No fee -- this is the free exit.
 
-        Returns the cash collected.
+        Returns the cash we collected.
 
-        Settlement is deliberately *not* recorded in :attr:`trades`. It is a
-        redemption, not a fill: it pays no fee, crosses no spread, and counting
-        it would inflate turnover. It used to be appended only when the payout
-        was positive, which made ``len(trades)`` one higher on markets that
-        happened to win -- a fill count that depended on the outcome. The cash
-        collected is this method's return value and is visible in :attr:`cash`.
+        On purpose, settlement does NOT get added to self.trades. It's a
+        redemption, not a fill: no fee, no spread crossed, and counting it would
+        inflate turnover. It used to get appended, but only when the payout was
+        positive, so len(trades) came out one higher on markets that happened to
+        win. A fill count that depends on whether you won is obviously wrong.
+        The cash is the return value and also shows up in self.cash.
         """
         if self.settled:
             raise RuntimeError("portfolio already settled")
@@ -291,19 +288,20 @@ class Portfolio:
         candle_index: int,
         stake: float | None = None,
     ) -> bool:
-        """Dispatch one action from :data:`ACTIONS`. Returns whether it filled.
+        """Run one action from ACTIONS. Returns True if something filled.
 
-        Buying the leg opposite an open position closes it first rather than
-        holding both legs, which would be a guaranteed-$1 box paying two fees.
-        If that close is refused the flip is abandoned whole.
+        If you buy the leg opposite an open position, we close the old one
+        first instead of holding both. Holding both would be a guaranteed $1 box
+        that costs two fees to build, which is never what you want. If that
+        close gets refused we bail on the whole flip.
 
-        Today that guard never fires: closing Up and buying Down both *reduce*
-        Up-equivalent exposure, so the two legs of a flip compute the same fill
-        price and always agree on tradability. The check is here so the
-        all-or-nothing invariant survives anyone tightening :meth:`buy`'s guards
-        independently of :meth:`close`'s -- at which point the coincidence
-        breaks and a half-executed flip would leave both legs open, which
-        :attr:`side` cannot represent and no downstream metric would notice.
+        Right now that guard can't actually trigger: closing Up and buying Down
+        both reduce Up-equivalent exposure, so both legs compute the same fill
+        price and always agree on whether it's tradable. It's here so the
+        all-or-nothing behaviour survives if someone later tightens buy()'s
+        checks without matching close(). Once that coincidence breaks, a
+        half-done flip would leave both legs open, and `side` has no way to
+        represent that, so nothing downstream would catch it.
         """
         if action == HOLD:
             return False

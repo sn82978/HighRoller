@@ -1,21 +1,21 @@
-"""Histograms of the per-run metrics a Q-learning sweep writes.
+"""Histograms of the per-run metrics from a Q-learning sweep.
 
-One figure per metric per split, showing the spread across the sweep's seeds.
-This is what turns "the agent loses $6.75" into "the agent loses $6.75 +/- x
-across N runs", which is the only honest way to report a single run's number.
+One figure per metric per split, showing how much the seeds disagree. This is
+what turns "the agent loses $6.75" into "the agent loses $6.75 +/- x across N
+runs", which is really the only honest way to report a number from one run.
 
     python QLearning/analysis.py                     # every family in metrics/
     python QLearning/analysis.py --family qlearning
 
-Reads QLearning/metrics/<family>_<split>.csv, writes
+Reads QLearning/metrics/<family>_<split>.csv and writes
 QLearning/metrics/figs/<family>/<Split>_<metric>.png.
 
-Previously this hardcoded `if '0.8T_0.2E' not in metrics_csv: continue`, so it
-silently produced nothing for any other model name, and it mapped the split
-labels 'eval'/'training' -- which the writer never emitted -- onto figure names,
-leaving the actual figures named after whatever the filename happened to end
-with. The progress report cites `Figs/7T2E/Evaluation_*.png` paths that do not
-exist in the repo under any name.
+This used to hardcode `if '0.8T_0.2E' not in metrics_csv: continue`, so it
+quietly produced nothing for any other model name. It also mapped split labels
+'eval'/'training' onto figure names, and the writer never emitted those, so the
+figures ended up named after whatever the filename happened to end with. The
+progress report cites Figs/7T2E/Evaluation_*.png paths that don't exist in this
+repo under any name.
 """
 
 import argparse
@@ -31,10 +31,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 METRICS_DIR = os.path.join(ROOT, "QLearning/metrics")
 FIGS_DIR = os.path.join(METRICS_DIR, "figs")
 
-#: Identifiers and constants, not outcomes -- a histogram of these says nothing.
+#: These are IDs and constants, not results. A histogram of them tells you nothing.
 EXCLUDE_COLS = {"iteration", "seed", "n_markets", "markets"}
 
-#: Split key -> the word that goes in the figure title and filename.
+#: Split key -> the word we put in the figure title and filename.
 SPLIT_LABELS = {"train": "Training", "val": "Validation", "test": "Test"}
 
 

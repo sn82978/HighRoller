@@ -137,12 +137,12 @@ def test_an_uninformative_model_scores_like_a_coin_flip(split):
 
 # -- theta selection must never see the reported split -------------------
 def test_theta_is_selected_on_val_only():
-    """Only validation may choose the threshold.
+    """Only val gets to choose the threshold.
 
-    On --split test the driver used to read theta off the test sweep, which
-    turns the held-out number into "the best of eleven thresholds tried on the
-    held-out data". Train is excluded for the same reason in reverse: a
-    threshold picked on the data the model was fitted to is not a threshold.
+    On --split test the driver used to read theta straight off the test sweep,
+    which turns the "held-out" number into the best of eleven thresholds we
+    tried on held-out data. Train is excluded for the mirror-image reason: a
+    threshold picked on the data the model was fit to isn't really a threshold.
     """
     from BaselineModels.run_baselines import SELECTION_SPLIT, selects_on_eval_split
 
@@ -153,10 +153,10 @@ def test_theta_is_selected_on_val_only():
 
 
 def test_a_theta_chosen_on_test_would_have_been_a_different_theta():
-    """The guard above is not decorative -- the two sweeps disagree.
+    """The guard above isn't just decoration -- the two sweeps really disagree.
 
-    Built so that val's best eligible theta (0.02) is not test's (0.05). If
-    selection ran on the reported split, the reported theta would change.
+    Set up so val's best eligible theta (0.02) isn't test's (0.05). If selection
+    ran on the split we're reporting, we'd report a different theta.
     """
     from BaselineModels.xgb_baseline import best_theta
 

@@ -175,9 +175,8 @@ def main():
         raise SystemExit(f"missing {mk_path} — run generate_trades.py first")
     markets = pd.read_csv(mk_path)
 
-    # markets.csv keeps every split that has been scored, so this file is no
-    # longer single-split the way it was when the header below just printed
-    # split.iloc[0].
+    # markets.csv now holds every split we've scored, so it isn't single-split
+    # anymore like it was back when the header below just printed split.iloc[0].
     present = sorted(markets.split.unique())
     if args.split is not None:
         if args.split not in present:
