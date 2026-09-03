@@ -15,13 +15,19 @@ Signals read off a candle's close, fills happen at the NEXT candle's open -- no 
 Fills/fees/slippage go through sim.execution via sim.evaluation.simulate_market, same as
 the other models (this used to charge slippage but not Polymarket's taker fee -- fixed now,
 which is why the numbers are comparable across models). Split comes from
-BaselineModels.data_loader (--split all reproduces the old full-dataset numbers).
+BaselineModels.data_loader via sim.evaluation.load_universe_candles.
+
+'dev' (train+val) is the universe to iterate on. 'test' and 'all' read the held-out
+block and refuse to run without --allow-test: this script used to default to 'all'
+and build that universe with allow_test hardcoded True, so every number it has
+published was computed over the test split.
 
 Writes strategies/output/markets.csv.
 
 Usage:
-    python strategies/generate_trades.py --split test
-    python strategies/generate_trades.py --split all --slippage 0.25
+    python strategies/generate_trades.py --split val --slippage 0.25
+    python strategies/generate_trades.py --split dev --slippage 0.25
+    python strategies/generate_trades.py --split test --allow-test   # once, at the end
 """
 
 import argparse
@@ -34,9 +40,14 @@ if ROOT not in sys.path:
 
 import pandas as pd
 
-from BaselineModels.data_loader import load_split
-from sim.evaluation import LAST_INDEX, load_split_candles, results_to_frame, simulate_market
+from sim.evaluation import (
+    LAST_INDEX,
+    load_universe_candles,
+    results_to_frame,
+    simulate_market,
+)
 from sim.execution import BUY_DOWN, BUY_UP, ExecutionConfig, HOLD, Side
+from sim.metrics import write_markets
 
 OUT_DIR = os.path.join(ROOT, "strategies/output")
 
@@ -75,23 +86,15 @@ def make_buy_and_hold(side):
     return decide
 
 
-def load_candles(split, days=None):
-    # split="all" = every resolved market, for the numbers already published in the README.
-    # anything else goes through the normal split.
-    if split == "all":
-        df = load_split("train", allow_test=False)
-        frames = [df]
-        for s in ("val", "test"):
-            frames.append(load_split(s, allow_test=True))
-        df = pd.concat(frames, ignore_index=True)
-        df = df[df.candle_index >= 0].sort_values(
-            ["event_slug", "candle_index"], ignore_index=True
-        )
-        g = df.groupby("event_slug", sort=False)
-        for col in ("open", "high", "low"):
-            df[f"next_{col}"] = g[col].shift(-1)
-    else:
-        df = load_split_candles(split, allow_test=(split == "test"))
+def load_candles(split, days=None, *, allow_test=False):
+    """Candles for one split or universe. 'dev' is train+val; 'all' adds test.
+
+    This used to build the "all" universe itself with allow_test hardcoded to
+    True, and "all" was the default -- so the ordinary invocation read the
+    held-out block. The universe loader now owns that decision and refuses test
+    unless the caller's own --allow-test says otherwise.
+    """
+    df = load_universe_candles(split, allow_test=allow_test)
     if days:
         keep_slugs = set(
             df.drop_duplicates("event_slug").sort_values("start_ts").tail(
@@ -106,9 +109,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--split",
-        default="all",
-        choices=["train", "val", "test", "all"],
-        help="market universe: the canonical split, or 'all' for the full dataset",
+        default="val",
+        choices=["train", "val", "test", "dev", "all"],
+        help="market universe: a canonical split, 'dev' for train+val, or 'all' "
+        "for the whole tape. 'test' and 'all' need --allow-test",
+    )
+    ap.add_argument(
+        "--allow-test",
+        action="store_true",
+        help="permit reading the held-out block. The paper budgets exactly one "
+        "such run, at the very end",
     )
     ap.add_argument("--days", type=int, help="use only the last N days within the split")
     ap.add_argument("--threshold", type=float, default=0.55)
@@ -116,7 +126,14 @@ def main():
     ap.add_argument(
         "--slippage",
         type=float,
-        default=0.0,
+        default=0.25,
+        # This was 0.0 even though the help text right below says the project
+        # default is 0.25, and every other track did default to 0.25. So running
+        # the documented command priced this track's fills differently from the
+        # models it sits next to in the table. Not a rounding difference either:
+        # momentum_flip is -77/1k at 0.0 vs -273/1k at 0.25, and its gross edge
+        # flips sign, +48/1k to -156/1k. The comparison's whole claim is "same
+        # markets, same costs".
         help="adverse fill as a fraction of the candle's high-low range "
         "(sim.execution.ExecutionConfig.slippage_frac; project default is 0.25)",
     )
@@ -124,10 +141,16 @@ def main():
     ap.add_argument("--out-dir", default=OUT_DIR)
     args = ap.parse_args()
 
-    if args.split == "test":
-        print("NOTE: --split test is the held-out set. Use --split val while iterating.")
+    if args.split in ("test", "all") and args.allow_test:
+        print(
+            f"NOTE: --split {args.split} reads the HELD-OUT test block. The paper "
+            "budgets one such run, at the end. Use --split val or dev to iterate."
+        )
 
-    df = load_candles(args.split, args.days)
+    try:
+        df = load_candles(args.split, args.days, allow_test=args.allow_test)
+    except PermissionError as exc:
+        raise SystemExit(f"refusing to run: {exc}") from None
     config = ExecutionConfig(slippage_frac=args.slippage, stake_dollars=args.stake)
 
     strategies = {
@@ -161,10 +184,11 @@ def main():
     mk = results_to_frame(results)
     os.makedirs(args.out_dir, exist_ok=True)
     mk_path = os.path.join(args.out_dir, "markets.csv")
-    mk.to_csv(mk_path, index=False)
-    fills_path = os.path.join(args.out_dir, "fills.csv")
+    kept = write_markets(mk_path, mk, args.split, slippage_frac=config.slippage_frac)
+    fills_path = os.path.join(args.out_dir, f"fills_{args.split}.csv")
     pd.DataFrame(fills).to_csv(fills_path, index=False)
-    print(f"{len(mk):>7,} rows -> {mk_path}")
+    print(f"{len(mk):>7,} rows -> {mk_path}"
+          + (f"  (kept {kept:,} rows from other splits)" if kept else ""))
     print(f"{len(fills):>7,} rows -> {fills_path}")
 
     n_markets = df.event_slug.nunique() - skipped

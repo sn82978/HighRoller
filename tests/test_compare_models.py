@@ -1,0 +1,149 @@
+"""Tests for the cross-model comparison.
+
+The comparison is the main thing the proposal promised -- no-trade, buy-and-hold,
+XGBoost at its swept threshold, and the Q-learning agent, all "on the same
+markets under the same fees". The fees match because every track goes through
+sim.execution now. The MARKETS only match if something actually makes them
+match, which is what these tests are for.
+"""
+
+import pandas as pd
+import pytest
+
+from sim.compare_models import align_to_common_markets
+
+
+def _rows(strategy, slugs, pnl=1.0):
+    return pd.DataFrame([
+        {"strategy": strategy, "event_slug": s, "split": "val", "start_ts": 100 + i,
+         "stake": 100.0, "pnl": pnl, "fees": 0.5, "stake_deployed": 100.0,
+         "notional_traded": 100.0, "n_trades": 1, "n_fills": 1,
+         "entry_candle": 1, "exit_candle": 60, "early_exit": False, "winner": "Up"}
+        for i, s in enumerate(slugs)
+    ])
+
+
+def test_alignment_restricts_everyone_to_the_shared_markets():
+    """Different sample cuts shouldn't turn into different denominators.
+
+    On the real val split the baselines cover 1,343 markets and the rule
+    strategies cover 1,332, because they drop markets for different reasons (a
+    warmup window vs a complete live window). Adding up PnL over those two
+    different sets and putting them in the same table compares two different
+    populations.
+    """
+    mk = pd.concat([
+        _rows("baseline", ["a", "b", "c", "d"]),
+        _rows("rule", ["b", "c", "d", "e"]),
+    ], ignore_index=True)
+
+    aligned, common, dropped = align_to_common_markets(mk)
+    assert common == {"b", "c", "d"}
+    assert dropped == {"baseline": 1, "rule": 1}
+    assert aligned.groupby("strategy").event_slug.nunique().unique().tolist() == [3]
+
+
+def test_alignment_is_a_noop_when_coverage_already_matches():
+    mk = pd.concat([_rows("a", ["x", "y"]), _rows("b", ["x", "y"])], ignore_index=True)
+    aligned, common, dropped = align_to_common_markets(mk)
+    assert dropped == {}
+    assert len(aligned) == len(mk)
+
+
+def test_alignment_refuses_when_models_share_nothing():
+    """Better to just stop than to print a table over an empty intersection."""
+    mk = pd.concat([_rows("a", ["x"]), _rows("b", ["y"])], ignore_index=True)
+    with pytest.raises(SystemExit, match="share no markets"):
+        align_to_common_markets(mk)
+
+
+def test_alignment_changes_the_reported_total():
+    """If alignment didn't change the total, the tests above wouldn't mean much."""
+    from sim.metrics import score_records
+
+    mk = pd.concat([
+        _rows("baseline", ["a", "b"], pnl=1.0),
+        _rows("rule", ["b"], pnl=1.0),
+    ], ignore_index=True)
+    unaligned = score_records(mk[mk.strategy == "baseline"])["total_pnl"]
+    aligned, _, _ = align_to_common_markets(mk)
+    assert score_records(aligned[aligned.strategy == "baseline"])["total_pnl"] < unaligned
+
+
+# -- identical fees, checked rather than assumed -------------------------
+def _cost_rows(strategy, slugs, slippage):
+    df = _rows(strategy, slugs)
+    df["slippage_frac"] = slippage
+    return df
+
+
+def test_comparing_across_cost_models_is_refused():
+    """The claim is "same markets, same fees", so actually check the fees.
+
+    generate_trades.py defaulted to --slippage 0.0 while every other track
+    defaulted to 0.25, so running each track's own documented command gave you a
+    table whose rows were priced differently. That's worth 196 per $1k on
+    momentum_flip, plus a sign flip on its gross edge. Nothing caught it because
+    the cost model wasn't recorded anywhere in the output.
+    """
+    from sim.compare_models import check_one_cost_model
+
+    mk = pd.concat([
+        _cost_rows("rule", ["a", "b"], 0.0),
+        _cost_rows("baseline", ["a", "b"], 0.25),
+    ], ignore_index=True)
+    with pytest.raises(SystemExit, match="different cost models"):
+        check_one_cost_model(mk)
+
+
+def test_one_shared_cost_model_passes_and_is_returned():
+    from sim.compare_models import check_one_cost_model
+
+    mk = pd.concat([
+        _cost_rows("rule", ["a", "b"], 0.25),
+        _cost_rows("baseline", ["a", "b"], 0.25),
+    ], ignore_index=True)
+    assert check_one_cost_model(mk) == 0.25
+
+
+def test_a_track_with_two_cost_models_in_one_file_is_refused():
+    """A half-regenerated markets.csv is worse than just a stale one."""
+    from sim.compare_models import check_one_cost_model
+
+    mk = pd.concat([
+        _cost_rows("rule", ["a"], 0.0),
+        _cost_rows("rule", ["b"], 0.25),
+    ], ignore_index=True)
+    with pytest.raises(SystemExit, match="more than one"):
+        check_one_cost_model(mk)
+
+
+def test_missing_cost_column_warns_instead_of_passing_silently(capsys):
+    from sim.compare_models import check_one_cost_model
+
+    assert check_one_cost_model(_rows("rule", ["a", "b"])) is None
+    assert "[warn]" in capsys.readouterr().out
+
+
+# -- a mean of ratios is not a ratio -------------------------------------
+def test_seed_family_reports_the_whole_distribution_not_just_a_mean():
+    """profit_factor has no upper bound, so averaging it across seeds is useless.
+
+    On the real test split, 3 of the 30 seeds happened to have almost no losing
+    markets and scored 207, 54 and 13. The mean came out to 9.85, which reads
+    like a wildly profitable agent, but the median was 0.47 and 23 of the 30
+    seeds lost money. If we report the mean we have to report the median next to
+    it.
+    """
+    from sim.compare_models import RATIO_METRICS, score_seed_family
+
+    mk = pd.concat(
+        [_rows(f"fam_seed{i:02d}", ["a", "b"], pnl=1.0) for i in range(4)]
+        + [_rows("fam_seed04", ["a", "b"], pnl=-1.0)],
+        ignore_index=True,
+    )
+    mean, stats = score_seed_family(mk, "fam")
+    assert set(stats) == {"mean", "sd", "median", "min", "max"}
+    assert stats["min"]["total_pnl"] <= stats["median"]["total_pnl"] <= stats["max"]["total_pnl"]
+    assert "profit_factor" in RATIO_METRICS
+    assert mean["strategy"] == "fam (mean of 5)"

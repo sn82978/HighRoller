@@ -1,9 +1,10 @@
 """
-Turns one train/val/test split into a list of per-market episode DataFrames for TradingEnv.
+Turns a train/val/test split into a list of per-market episode DataFrames for TradingEnv.
 
-Used to build this from a random split done locally in split_data.py, but that didn't
-share any markets with BaselineModels' split, so results weren't comparable across
-models. Now just pulls from sim.evaluation.load_split_candles like everything else does.
+This used to build off a random split done locally in split_data.py, but that
+split didn't share any markets with BaselineModels', so you couldn't compare
+results across models at all. Now it just pulls from
+sim.evaluation.load_split_candles like everything else.
 """
 
 import os
@@ -50,8 +51,15 @@ def get_eval_data() -> list[pd.DataFrame]:
     return episodes
 
 
-def get_test_data() -> list[pd.DataFrame]:
-    df = load_split_candles("test", allow_test=True)
+def get_test_data(*, allow_test: bool = False) -> list[pd.DataFrame]:
+    """Held-out episodes. You have to pass allow_test explicitly.
+
+    This had allow_test=True hardcoded, so anything that called it read the
+    held-out data whether or not that was what you meant. Right now the only
+    caller is a commented-out block in training.py, which is exactly the sort of
+    line someone uncomments without reading it first.
+    """
+    df = load_split_candles("test", allow_test=allow_test)
     episodes = prepare_episodes(df)
     print(f"{len(episodes)} test episodes")
     return episodes

@@ -21,9 +21,15 @@ btc_updown_15m_minute
 btc_updown_15m_ticks
 QLearning/data
 
-# backtest outputs, regenerate from strategies/README.md
+# Per-market backtest rows. One line per (strategy, market) -- large, and
+# purely intermediate: comparison.csv and RESULTS.md are scored off them.
+# Regenerate with the commands in FIGURES.md.
 strategies/output/
 BaselineModels/output/
 QLearning/output/
-comparison.csv
-comparison_figs/
+
+# comparison.csv, comparison_spread.csv and comparison_figs/ are NOT ignored.
+# They are the headline four-way result the writeup cites, they are small
+# (~350KB all told), and a reader who clones this repo should not have to run
+# three tracks and a 30-seed sweep to see the table the paper is about. Same
+# reason figs/ and QLearning/figs/ are committed.

@@ -13,7 +13,7 @@ from make_environment import TradingEnv
 from q_learning_agent import QLearningAgent
 from make_environment import StepInfo
 
-from sim.evaluation import score
+from sim.evaluation import SETTLEMENT_CANDLE, score
 from sim.execution import ACTION_NAMES, ExecutionConfig, HOLD, BUY_UP, BUY_DOWN, CLOSE
 
 # repo-relative now instead of hardcoded to shreya's machine
@@ -23,7 +23,8 @@ MODELS_DIR = os.path.join(ROOT, "QLearning/models")
 OUT_DIR = os.path.join(ROOT, "QLearning/output")
 
 
-def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name: str, model_name: str, iteration: int):
+def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name: str,
+             model_name: str, iteration: int, seed=None):
     # greedy pass (epsilon=0) over every episode, builds rows in the same schema
     # the other models use so it can go through sim.evaluation.score() too
     market_rows = []
@@ -42,6 +43,11 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
 
         ep = env._ep
         last = ep.iloc[-1]
+        # Same schema every other track writes (see sim.metrics), so
+        # compare_models.py can score the agent with the exact same function.
+        trades = env.portfolio.trades
+        entries = [t for t in trades if t.action in (BUY_UP, BUY_DOWN)]
+        closes = [t for t in trades if t.action == CLOSE]
         market_rows.append(
             dict(
                 strategy=model_name,
@@ -50,10 +56,23 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
                 split=env_name,
                 stake=env.config.stake_dollars,
                 pnl=env.portfolio.cash,
-                return_pct=env.portfolio.cash / env.config.stake_dollars * 100.0,
-                traded=bool(env.portfolio.trades),
-                n_legs=len(env.portfolio.trades),
+                fees=env.portfolio.fees_paid,
+                stake_deployed=float(sum(t.shares * t.price for t in entries)),
+                notional_traded=float(sum(t.shares * t.price for t in trades)),
+                n_trades=len(entries),
+                n_fills=len(trades),
+                entry_candle=entries[0].candle_index if entries else None,
+                exit_candle=(
+                    closes[-1].candle_index if closes
+                    else (SETTLEMENT_CANDLE if entries else None)
+                ),
+                early_exit=bool(closes),
                 winner=str(last.winner),
+                # Save which cost model this row used, so compare_models.py can
+                # actually check that "same fees" held instead of trusting that
+                # every track got launched with matching flags. See
+                # sim.metrics.COST_MODEL_FIELD.
+                slippage_frac=env.config.slippage_frac,
             )
         )
         all_ep_actions.append(ep_actions)
@@ -73,30 +92,88 @@ def evaluate(env: TradingEnv, agent: QLearningAgent, save_to_csv: bool, env_name
         s = score(mk)
         s["model"] = model_name
         s["iteration"] = iteration
-        metrics_df = pd.DataFrame([s])
-        csv_path = f"{METRICS_DIR}/{model_name.split('ITER')[0]}_{env_name}.csv"
-        file_exists = os.path.exists(csv_path)
-        metrics_df.to_csv(csv_path, mode="a", header=not file_exists, index=False)
+        # The run seed, not agent.seed. The agent's is derived from this one,
+        # and saving the derived value makes the column useless for re-running.
+        s["seed"] = seed
+        _append_row(metrics_path(model_family(model_name), env_name), pd.DataFrame([s]))
 
-        # same schema as the other models so compare_models.py can just concat these
-        markets_path = os.path.join(OUT_DIR, "markets.csv")
-        file_exists = os.path.exists(markets_path)
-        mk.to_csv(markets_path, mode="a", header=not file_exists, index=False)
+        # same schema as the other models so compare_models.py can just concat them
+        _append_row(os.path.join(OUT_DIR, "markets.csv"), mk)
 
     return all_ep_actions
 
 
-def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False, config: ExecutionConfig | None = None):
+def model_family(model_name):
+    """'qlearning_seed07' -> 'qlearning'. Just strips the per-run suffix."""
+    return model_name.split("_seed")[0].split("ITER")[0]
+
+
+def metrics_path(family, env_name):
+    return os.path.join(METRICS_DIR, f"{family}_{env_name}.csv")
+
+
+def _append_row(path, df):
+    """Append a row, but refuse if the schema doesn't match what's already there.
+
+    These get written 30 times per sweep in append mode. pandas writes values in
+    the frame's own column order and never checks them against the header
+    already on disk, so if the schema changes you silently end up with a file
+    whose columns don't match its own header. That's exactly what would have
+    happened to the old committed metrics CSVs when score()'s output changed.
+    """
+    if os.path.exists(path):
+        header = list(pd.read_csv(path, nrows=0).columns)
+        if header != list(df.columns):
+            raise SystemExit(
+                f"{path} already exists with a different schema.\n"
+                f"  on disk: {header}\n"
+                f"  writing: {list(df.columns)}\n"
+                "Move the old file aside (or run reset_outputs) before re-running."
+            )
+    df.to_csv(path, mode="a", header=not os.path.exists(path), index=False)
+
+
+def reset_outputs(family):
+    """Wipe one model family's outputs so a sweep starts clean.
+
+    Every run of the 30-run sweep appended to the same markets.csv and metrics
+    CSVs and nothing ever truncated them, so running a second sweep quietly
+    doubled every row and compare_models.py scored each market twice.
+    """
+    removed = []
+    for env_name in ("train", "val", "test"):
+        p = metrics_path(family, env_name)
+        if os.path.exists(p):
+            os.remove(p)
+            removed.append(p)
+    p = os.path.join(OUT_DIR, "markets.csv")
+    if os.path.exists(p):
+        os.remove(p)
+        removed.append(p)
+    for p in removed:
+        print(f"  cleared {p}")
+
+
+def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False,
+         config: ExecutionConfig | None = None, seed=None, episodes=None,
+         eval_episodes=None):
     config = config or ExecutionConfig()
+    if seed is None:
+        seed = iteration
 
-    # data prep
-    print("getting training data")
-    episodes = get_training_data()
+    # data prep. run_sweep passes these in so 30 runs don't re-read the same
+    # parquet 30 times. If you call main() directly we load them here.
+    if episodes is None:
+        print("getting training data")
+        episodes = get_training_data()
 
-    # make env and agent
-    print("making environment and agent")
-    env = TradingEnv(episodes=episodes, config=config)
-    agent = QLearningAgent(state_shape=env.state_space_size(), n_actions=env.n_actions())
+    # env and agent. Two seeds derived from one run seed -- the env picks which
+    # markets get played, the agent picks exploration moves and breaks ties.
+    print(f"making environment and agent (seed {seed})")
+    env = TradingEnv(episodes=episodes, config=config, seed=seed)
+    agent = QLearningAgent(
+        state_shape=env.state_space_size(), n_actions=env.n_actions(), seed=seed + 10_000
+    )
 
     # Lists to track metrics over training
     rewards_history = []
@@ -192,12 +269,13 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False, config: 
     agent.save(f'{MODELS_DIR}/{model_name}.npy')  # save q table
 
     print("evaluating agent on training data")
-    train_eval_actions = evaluate(env, agent, save_to_csv, "train", model_name, iteration)
+    train_eval_actions = evaluate(env, agent, save_to_csv, "train", model_name, iteration, seed)
 
     print("evaluating agent")
-    eval_episodes = get_eval_data()
-    eval_env = TradingEnv(episodes=eval_episodes, config=config)
-    eval_actions = evaluate(eval_env, agent, save_to_csv, "val", model_name, iteration)
+    if eval_episodes is None:
+        eval_episodes = get_eval_data()
+    eval_env = TradingEnv(episodes=eval_episodes, config=config, seed=seed)
+    eval_actions = evaluate(eval_env, agent, save_to_csv, "val", model_name, iteration, seed)
 
     # plot seq of actions in evaluation as a heatmap
     max_len = max(len(seq) for seq in eval_actions)
@@ -218,14 +296,98 @@ def main(model_name, iteration=0, NUM_EPISODES=5000, save_to_csv=False, config: 
     plt.savefig(os.path.join(SAVE_DIR, f"{model_name}_eval_action_sequences.png"), dpi=300)
     plt.close()
 
-    # print('testing agent')
-    # test_episodes = get_test_data()
-    # test_env = TradingEnv(episodes=test_episodes, config=config)
-    # evaluate(test_env, agent, save_to_csv, 'test', model_name, iteration)
+    return agent
+
+
+#: One run per seed. The progress report averaged 30 runs across two setups it
+#: called "70/20" and "80/20", but those names never matched anything the code
+#: did: get_training_data()/get_eval_data() read the standard 70/15/15 temporal
+#: split from BaselineModels.data_loader, and "0.8T_0.2E" was only ever a
+#: filename prefix. There's no split-ratio argument anywhere in this track. The
+#: old ratios came from split_data.py, which split day-files at random -- the
+#: non-temporal split the proposal explicitly ruled out -- and that file is
+#: marked SUPERSEDED now. So instead of reimplementing the two configs we
+#: dropped them, and measure the spread across seeds on the one split every
+#: model shares.
+DEFAULT_RUNS = 30
+DEFAULT_EPISODES = 6789
+MODEL_FAMILY = "qlearning"
+
+
+def run_sweep(n_runs=DEFAULT_RUNS, num_episodes=DEFAULT_EPISODES,
+              family=MODEL_FAMILY, config=None, fresh=True):
+    """Train n_runs agents, one per seed, and score each of them on train and val.
+
+    Takes a lock while it runs. If two sweeps for the same family run at once
+    they append into the same CSVs line by line, and if one calls reset_outputs
+    partway through the other it truncates the file mid-run. This actually
+    happened: we ended up with 56 rows in a 30-run file and 188,708 duplicate
+    market rows, and nothing errored. Nothing downstream would have caught it
+    either -- score() would have just averaged each market twice.
+    """
+    lock = os.path.join(OUT_DIR, f".{family}.sweep.lock")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit(
+            f"another sweep for family {family!r} is already running "
+            f"(lock: {lock}).\nIf that is stale -- no python process is training "
+            f"-- delete the file and retry."
+        )
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    try:
+        _run_sweep_locked(n_runs, num_episodes, family, config, fresh)
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
+def _run_sweep_locked(n_runs, num_episodes, family, config, fresh):
+    if fresh:
+        reset_outputs(family)
+
+    # Load once and share. The episode frames are read-only, and re-reading the
+    # parquet for all 30 runs was most of the wall clock time.
+    print("loading episodes")
+    train_episodes = get_training_data()
+    eval_episodes = get_eval_data()
+
+    for seed in range(n_runs):
+        model_name = f"{family}_seed{seed:02d}"
+        print(f"\n=== run {seed + 1}/{n_runs}: {model_name} ===")
+        main(
+            model_name,
+            iteration=seed,
+            seed=seed,
+            NUM_EPISODES=num_episodes,
+            save_to_csv=True,
+            config=config,
+            episodes=train_episodes,
+            eval_episodes=eval_episodes,
+        )
 
 
 if __name__ == "__main__":
-    base_modelname = "0.8T_0.2E_qtable"
-    for i in range(30):
-        modelname = f"{base_modelname}ITER{i}"
-        main(modelname, iteration=i, NUM_EPISODES=6789, save_to_csv=True)
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Train the Q-learning sweep.")
+    ap.add_argument("--runs", type=int, default=DEFAULT_RUNS)
+    ap.add_argument("--episodes", type=int, default=DEFAULT_EPISODES)
+    ap.add_argument("--family", default=MODEL_FAMILY)
+    ap.add_argument("--slippage", type=float, default=0.25,
+                    help="ExecutionConfig.slippage_frac; project default is 0.25")
+    ap.add_argument("--append", action="store_true",
+                    help="keep existing outputs instead of clearing them first")
+    args = ap.parse_args()
+
+    run_sweep(
+        n_runs=args.runs,
+        num_episodes=args.episodes,
+        family=args.family,
+        config=ExecutionConfig(slippage_frac=args.slippage),
+        fresh=not args.append,
+    )

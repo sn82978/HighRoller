@@ -39,6 +39,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -76,9 +78,13 @@ class StepInfo:
 
 class TradingEnv:
 
-    def __init__(self, episodes, config: ExecutionConfig | None = None):
+    def __init__(self, episodes, config: ExecutionConfig | None = None, seed=None):
         if not episodes:
-            print("no episodes")
+            raise ValueError(
+                "TradingEnv got no episodes. This used to just print 'no episodes' "
+                "and keep going, and then reset() blew up later on an empty-range "
+                "integers() call that had nothing to do with the real problem."
+            )
 
         self.episodes = episodes
         self.config = config or ExecutionConfig()
@@ -86,22 +92,55 @@ class TradingEnv:
         self._i = 0 # which candle row are we in rn
         self.portfolio = Portfolio(config=self.config)
         self._entry_price = 0.0 # Up-equivalent price the open position was entered at
-        self._rng = np.random.default_rng() # initalizes the rng to pick a random market next time
+        self._c = None # numpy views of the current episode, see _columns()
+        self._cols = {} # index -> those views, built once per episode
+        # Seeded on purpose. Which markets a run visits is part of the run, and
+        # leaving default_rng() unseeded meant nobody could reproduce the 30-run
+        # spread we were reporting.
+        self._rng = np.random.default_rng(seed)
+
+    def _columns(self, index):
+        """Grab the columns the step loop needs as numpy arrays, once per episode.
+
+        The loop used to call self._ep.iloc[i]["price_up"] several times every
+        single step. A full 30-seed sweep is around 25 million steps, so that
+        pandas indexing was basically the entire runtime -- 2 hours, almost none
+        of it actual math. The episode frames never change, so we pull the
+        columns out once and cache them.
+        """
+        cached = self._cols.get(index)
+        if cached is None:
+            ep = self.episodes[index]
+            get = lambda c: (
+                ep[c].to_numpy(dtype=float) if c in ep.columns
+                else np.full(len(ep), np.nan)
+            )
+            cached = {
+                "candle_index": ep["candle_index"].to_numpy(dtype=np.int64),
+                "price_up": get("price_up"),
+                "price_down": get("price_down"),
+                "next_open": get("next_open"),
+                "next_high": get("next_high"),
+                "next_low": get("next_low"),
+                "winner": str(ep["winner"].iloc[0]).strip().capitalize(),
+                "n": len(ep),
+            }
+            self._cols[index] = cached
+        return cached
 
     def _get_state(self):
-        row = self._ep.iloc[self._i]
+        c = self._c
+        i = self._i
         position = _SIDE_TO_BUCKET[self.portfolio.side]
 
         # time bucket safely bounded [0, 59]
-        time_bucket = max(0, min(int(row["candle_index"]), MAX_TIME_BUCKET))
+        time_bucket = max(0, min(int(c["candle_index"][i]), MAX_TIME_BUCKET))
 
         # current mark price of whichever leg (if any) we hold
-        if position == LONG_UP:
-            curr_price = row["price_up"]
-        elif position == LONG_DOWN:
-            curr_price = row["price_down"]
+        if position == LONG_DOWN:
+            curr_price = c["price_down"][i]
         else:
-            curr_price = row["price_up"]
+            curr_price = c["price_up"][i]
 
         # calculate the price bucket
         price_bucket = min(int(curr_price * N_PRICE_BUCKETS), N_PRICE_BUCKETS - 1)
@@ -142,17 +181,21 @@ class TradingEnv:
         if episode_index is None:
             index = self._rng.integers(0, len(self.episodes))
 
-        self._ep = self.episodes[index].reset_index(drop=True)
+        self._ep = self.episodes[index]
+        self._c = self._columns(index)
         self._i = 0
         self.portfolio = Portfolio(config=self.config)
         self._entry_price = 0.0
         return self._get_state()
 
     def step(self, action):
-        row = self._ep.iloc[self._i]
-        is_last_step = self._i == len(self._ep) - 1
+        c = self._c
+        i = self._i
+        is_last_step = i == c["n"] - 1
+        nxt_o = c["next_open"][i]
+        fill_candle = int(c["candle_index"][i]) + 1
 
-        value_before = self.portfolio.value(row["price_up"])
+        value_before = self.portfolio.value(c["price_up"][i])
         was_valid = True
         fee_before = self.portfolio.fees_paid
 
@@ -161,26 +204,34 @@ class TradingEnv:
         elif action == CLOSE:
             if self.portfolio.side is Side.FLAT:
                 was_valid = False
-            elif is_last_step or pd.isna(row.get("next_open")):
+            elif is_last_step or math.isnan(nxt_o):
                 was_valid = False  # no next candle to fill a close against
             else:
+                # Stamped with the candle the trade FILLS on, not the one that
+                # triggered it. Same as backtest.py and sim.evaluation, so
+                # holding periods mean the same thing everywhere.
                 was_valid = self.portfolio.close(
-                    row["next_open"], row["next_high"], row["next_low"], int(row["candle_index"])
+                    nxt_o, c["next_high"][i], c["next_low"][i], fill_candle,
                 )
                 if was_valid:
                     self._entry_price = 0.0
         elif action in (BUY_UP, BUY_DOWN):
             if self.portfolio.side is not Side.FLAT:
                 was_valid = False
-            elif is_last_step or pd.isna(row.get("next_open")):
+            elif is_last_step or math.isnan(nxt_o):
                 was_valid = False  # no next candle to fill an entry against
             else:
                 side = Side.UP if action == BUY_UP else Side.DOWN
                 was_valid = self.portfolio.buy(
-                    side, row["next_open"], row["next_high"], row["next_low"], int(row["candle_index"])
+                    side, nxt_o, c["next_high"][i], c["next_low"][i], fill_candle,
                 )
                 if was_valid:
-                    self._entry_price = row["next_open"] if side is Side.UP else 1.0 - row["next_open"]
+                    # The price we actually paid, slippage and all -- not the
+                    # raw next_open. The agent's pnl_bucket is measured against
+                    # this, so using the un-slipped mid would tell it it was
+                    # already up on a position it just paid the spread to open.
+                    entry = self.portfolio.trades[-1]
+                    self._entry_price = entry.price
         else:
             raise ValueError(f"unknown action {action!r}")
 
@@ -188,14 +239,13 @@ class TradingEnv:
 
         # forced settlement at episode end -- no exit taker fee on resolution
         if is_last_step and self.portfolio.side is not Side.FLAT:
-            self.portfolio.settle(str(row["winner"]).strip().capitalize())
+            self.portfolio.settle(c["winner"])
             self._entry_price = 0.0
 
         if is_last_step:
             value_after = self.portfolio.cash  # settled: no open position left
         else:
-            next_row = self._ep.iloc[self._i + 1]
-            value_after = self.portfolio.value(next_row["price_up"])
+            value_after = self.portfolio.value(c["price_up"][i + 1])
 
         reward = value_after - value_before
 
@@ -205,7 +255,13 @@ class TradingEnv:
             _SIDE_TO_BUCKET[self.portfolio.side],
             reward,
             fee=fee,
-            gross_pnl=max(0.0, reward + fee),
+            # No clamp here. This used to be max(0.0, reward + fee), which
+            # threw away every losing step from the gross-PnL total but kept
+            # their fees. The fee-drag ratio built on that read 6.9% when the
+            # honest number was 147.3% -- 21.5x off on the exact same trades,
+            # and flattering right when the policy was doing worst. Fee drag is
+            # computed once now, in sim.metrics, off net gross PnL.
+            gross_pnl=reward + fee,
         )
         done = is_last_step
 

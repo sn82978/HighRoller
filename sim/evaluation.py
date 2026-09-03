@@ -1,38 +1,47 @@
 """
-Shared evaluation harness so strategies/, QLearning/ and BaselineModels/ are actually
-comparable: same train/val/test split (market_slugs), same fill engine (simulate_market,
-which drives sim.execution.Portfolio), same metrics (score() on MARKET_RECORD_FIELDS).
-Point every model at this instead of reimplementing any of the three per model.
+Shared evaluation code so strategies/, QLearning/ and BaselineModels/ are
+actually comparable. Same train/val/test split (market_slugs), same fill engine
+(simulate_market, which drives sim.execution.Portfolio), and same metrics
+(score() on MARKET_RECORD_FIELDS). Point every model at this instead of each one
+reimplementing all three.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-import numpy as np
 import pandas as pd
 
-from BaselineModels.data_loader import compute_bounds, load_split, market_universe
-from sim.execution import ExecutionConfig, Portfolio, Side
+from BaselineModels.data_loader import (
+    SPLIT_NAMES,
+    compute_bounds,
+    load_split,
+    market_universe,
+)
+from sim.execution import BUY_DOWN, BUY_UP, ExecutionConfig, Portfolio, Side
+from sim.metrics import MARKET_RECORD_FIELDS, MARKETS_PER_YEAR, score_records
 
 # last live candle index (0..59 once pre-open rows are dropped)
 LAST_INDEX = 59
+# where a held position redeems -- one past the last live candle, same as
+# BaselineModels/backtest.py so holding periods mean the same thing in both.
+SETTLEMENT_CANDLE = LAST_INDEX + 1
 
-# columns every model's markets.csv has to have, this is what score() reads
-MARKET_RECORD_FIELDS = (
-    "strategy",
-    "event_slug",
-    "start_ts",
-    "split",
-    "stake",
-    "pnl",
-    "return_pct",
-    "traded",
-    "n_legs",
-    "winner",
-)
+__all__ = [
+    "LAST_INDEX",
+    "SETTLEMENT_CANDLE",
+    "MARKET_RECORD_FIELDS",
+    "MARKETS_PER_YEAR",
+    "UNIVERSES",
+    "market_slugs",
+    "load_split_candles",
+    "load_universe_candles",
+    "MarketResult",
+    "simulate_market",
+    "results_to_frame",
+    "score",
+]
 
 
 def market_slugs(split: str, dataset: str = "candles_15s", *, allow_test: bool = False) -> set[str]:
@@ -45,9 +54,8 @@ def market_slugs(split: str, dataset: str = "candles_15s", *, allow_test: bool =
     return set(keep.event_slug)
 
 
-def load_split_candles(split: str, *, allow_test: bool = False) -> pd.DataFrame:
-    """live-window candles for a split, with next_open/high/low added for fills."""
-    df = load_split(split, dataset="candles_15s", allow_test=allow_test)
+def _add_next_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """Live-window rows, sorted, carrying the next candle's OHLC for fills."""
     df = df[df.candle_index >= 0].sort_values(["event_slug", "candle_index"], ignore_index=True)
     g = df.groupby("event_slug", sort=False)
     for col in ("open", "high", "low"):
@@ -55,20 +63,82 @@ def load_split_candles(split: str, *, allow_test: bool = False) -> pd.DataFrame:
     return df
 
 
+def load_split_candles(split: str, *, allow_test: bool = False) -> pd.DataFrame:
+    """live-window candles for a split, with next_open/high/low added for fills."""
+    return _add_next_ohlc(load_split(split, dataset="candles_15s", allow_test=allow_test))
+
+
+#: Multi-split universes. "dev" is everything you may iterate on freely; "all"
+#: additionally contains the held-out block and is gated behind allow_test.
+UNIVERSES: dict[str, tuple[str, ...]] = {
+    "dev": ("train", "val"),
+    "all": ("train", "val", "test"),
+}
+
+
+def load_universe_candles(name: str, *, allow_test: bool = False) -> pd.DataFrame:
+    """Candles for one split, or for a named universe made of several splits.
+
+    This is the only place a multi-split load is allowed to happen, because the
+    last one wasn't: strategies/generate_trades.py built its own "all" universe
+    by calling load_split("test", allow_test=True) with the flag hardcoded, and
+    "all" was the default. So every headline number that track published was
+    computed over the held-out block, while the progress report says twice that
+    the test split has never been read.
+
+    data_loader.load_split does refuse test without allow_test, but that only
+    helps if nobody hardcodes the flag. Routing every multi-split load through
+    here means the flag has to come from the caller's own --allow-test, so
+    reading the held-out data stays something deliberate that shows up in your
+    shell history and in a diff.
+    """
+    if name in SPLIT_NAMES:
+        return load_split_candles(name, allow_test=allow_test)
+    try:
+        parts = UNIVERSES[name]
+    except KeyError:
+        raise ValueError(
+            f"unknown universe {name!r}; expected one of "
+            f"{sorted(SPLIT_NAMES) + sorted(UNIVERSES)}"
+        ) from None
+    if "test" in parts and not allow_test:
+        raise PermissionError(
+            f"universe {name!r} contains the held-out test split. Use 'dev' "
+            "(train+val) while iterating, or pass allow_test=True for the single "
+            "final evaluation reported in the paper."
+        )
+    frames = [load_split(s, dataset="candles_15s", allow_test=allow_test) for s in parts]
+    return _add_next_ohlc(pd.concat(frames, ignore_index=True))
+
+
 DecideFn = Callable[[pd.Series, Portfolio, int], int]
 
 
 @dataclass
 class MarketResult:
+    """One policy's run through one market, in the shared schema.
+
+    Same fields as BaselineModels.metrics.MarketResult, so both of them can go
+    straight into sim.metrics.score_records with no conversion in between.
+    """
+
     strategy: str
     event_slug: str
     start_ts: int
     split: str
+    #: money allotted to this market, and what we divide returns by. Not the
+    #: same as stake_deployed, which adds up every entry's notional and so
+    #: double-counts a position that got rolled instead of added to.
     stake: float
     pnl: float
-    return_pct: float
-    traded: bool
-    n_legs: int
+    fees: float
+    stake_deployed: float
+    notional_traded: float
+    n_trades: int
+    n_fills: int
+    entry_candle: int | None
+    exit_candle: int | None
+    early_exit: bool
     winner: str
     portfolio: Portfolio
 
@@ -89,36 +159,60 @@ def simulate_market(
 
     Shared by the rule baselines and the XGB baseline; the Q-learning agent trains with
     its own step loop but evaluates through this same function.
+
+    Trades get stamped with the candle they FILL on, not the one that signalled
+    them, which matches BaselineModels/backtest.py -- it was already doing this.
+    The two harnesses used to be off by one candle from each other here, which
+    quietly shifted every holding period between the tracks by the same amount.
     """
     config = config or ExecutionConfig()
     portfolio = Portfolio(config=config)
     n = len(episode)
+    entry_candle: int | None = None
+    exit_candle: int | None = None
+    early_exit = False
+
     for i in range(n):
         row = episode.iloc[i]
         is_last = i == n - 1
         action = decide(row, portfolio, i)
-        if not is_last:
-            portfolio.apply(
-                action, row.next_open, row.next_high, row.next_low, int(row.candle_index)
-            )
-        # candle 59 has no next candle to fill against; only settlement can
-        # close a position opened on or before candle 58.
+        if is_last:
+            # candle 59 has no next candle to fill against; only settlement can
+            # close a position opened on or before candle 58.
+            continue
+        was = portfolio.side
+        fill_candle = int(row.candle_index) + 1
+        if not portfolio.apply(action, row.next_open, row.next_high, row.next_low, fill_candle):
+            continue
+        if action in (BUY_UP, BUY_DOWN):
+            if entry_candle is None:
+                entry_candle = fill_candle
+        if was is not Side.FLAT and portfolio.side is Side.FLAT:
+            exit_candle = fill_candle
+            early_exit = True
+
     last = episode.iloc[-1]
     if portfolio.side is not Side.FLAT:
-        portfolio.settle(last.winner, candle_index=LAST_INDEX)
+        exit_candle = SETTLEMENT_CANDLE
+        early_exit = False
+        portfolio.settle(str(last.winner), candle_index=SETTLEMENT_CANDLE)
 
-    stake = config.stake_dollars
-    pnl = portfolio.cash
+    entries = [t for t in portfolio.trades if t.action in (BUY_UP, BUY_DOWN)]
     return MarketResult(
         strategy=strategy,
         event_slug=str(last.event_slug),
         start_ts=int(episode.iloc[0].start_ts) if "start_ts" in episode.columns else 0,
         split=split,
-        stake=stake,
-        pnl=pnl,
-        return_pct=pnl / stake * 100.0,
-        traded=bool(portfolio.trades),
-        n_legs=len(portfolio.trades),
+        stake=config.stake_dollars,
+        pnl=portfolio.cash,
+        fees=portfolio.fees_paid,
+        stake_deployed=float(sum(t.shares * t.price for t in entries)),
+        notional_traded=float(sum(t.shares * t.price for t in portfolio.trades)),
+        n_trades=len(entries),
+        n_fills=len(portfolio.trades),
+        entry_candle=entry_candle,
+        exit_candle=exit_candle,
+        early_exit=early_exit,
         winner=str(last.winner),
         portfolio=portfolio,
     )
@@ -133,71 +227,27 @@ def results_to_frame(results: Iterable[MarketResult]) -> pd.DataFrame:
 
 
 # -- metrics --------------------------------------------------------------
-
-MARKETS_PER_YEAR = 4 * 24 * 365
-
-
-def _bootstrap_ci(x: np.ndarray, n: int = 2000, seed: int = 0) -> tuple[float, float]:
-    if len(x) < 2:
-        return 0.0, 0.0
-    rng = np.random.default_rng(seed)
-    means = rng.choice(x, size=(n, len(x)), replace=True).mean(axis=1)
-    return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
-
-
-def _max_drawdown_dollars(cum_pnl: np.ndarray) -> float:
-    if len(cum_pnl) == 0:
-        return 0.0
-    peak = np.maximum.accumulate(np.concatenate([[0.0], cum_pnl]))[1:]
-    return float(np.min(cum_pnl - peak))
-
-
 def score(mk: pd.DataFrame) -> dict:
-    """Headline metrics (ROI, Sharpe, t-stat, drawdown, CI) for one strategy/split's rows.
+    """Score one strategy on one split. Delegates to :func:`sim.metrics.score_records`.
 
-    mk needs MARKET_RECORD_FIELDS and exactly one strategy + one split -- group by both
-    before calling. This is the one place these numbers get computed for cross-model
-    comparisons; analyze_trades.py adds its own extra diagnostics on top separately.
+    ``mk`` needs :data:`MARKET_RECORD_FIELDS` and exactly one strategy + one
+    split -- group by both before calling.
+
+    This function used to carry its own arithmetic, which disagreed with
+    ``BaselineModels.metrics.trading_metrics`` on nearly every quantity they
+    shared: drawdown came out negative here and positive there, Sharpe was taken
+    over a different set of markets, and fee drag, turnover and holding period
+    were not computed at all because the old CSV schema did not carry the
+    columns they need. Both now call the same function, so the four-way
+    comparison the proposal asks for is arithmetic rather than translation.
     """
     if mk.strategy.nunique() > 1:
         raise ValueError("score() takes one strategy at a time; got " f"{sorted(mk.strategy.unique())}")
     if mk.split.nunique() > 1:
         raise ValueError("score() takes one split at a time; got " f"{sorted(mk.split.unique())}")
 
-    mk = mk.sort_values("start_ts").reset_index(drop=True)
-    n = len(mk)
-    stake = float(mk.stake.iloc[0])
-    pnl = mk.pnl.to_numpy()
-    ret = mk.return_pct.to_numpy() / 100.0
-    cum_pnl = np.cumsum(pnl)
-
-    wins, losses = pnl[pnl > 0], pnl[pnl < 0]
-    sd = ret.std(ddof=1) if n > 1 else 0.0
-    sharpe = ret.mean() / sd if sd > 0 else 0.0
-    tstat = sharpe * math.sqrt(n) if sd > 0 else 0.0
-    lo, hi = _bootstrap_ci(ret)
-
     return {
         "strategy": mk.strategy.iloc[0],
         "split": mk.split.iloc[0],
-        "markets": n,
-        "markets_traded": int(mk.traded.sum()),
-        "participation_%": mk.traded.mean() * 100 if n else 0.0,
-        "total_staked": stake * n,
-        "total_pnl": float(pnl.sum()),
-        "roi_on_stake_%": float(pnl.sum() / (stake * n) * 100) if n else 0.0,
-        "avg_pnl_per_market": float(pnl.mean()) if n else 0.0,
-        "median_pnl": float(np.median(pnl)) if n else 0.0,
-        "avg_return_%": float(ret.mean() * 100) if n else 0.0,
-        "return_ci95_low_%": lo * 100,
-        "return_ci95_high_%": hi * 100,
-        "win_rate_%": float((pnl > 0).mean() * 100) if n else 0.0,
-        "profit_factor": (
-            float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() else float("inf")
-        ),
-        "sharpe_per_market": float(sharpe),
-        "sharpe_annualized": float(sharpe * math.sqrt(MARKETS_PER_YEAR)),
-        "t_stat": float(tstat),
-        "max_drawdown_$": _max_drawdown_dollars(cum_pnl),
-        "max_drawdown_stakes": _max_drawdown_dollars(cum_pnl) / stake if stake else 0.0,
+        **score_records(mk),
     }
